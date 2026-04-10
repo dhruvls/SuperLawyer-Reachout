@@ -27,7 +27,7 @@ HEADERS = {
                   'Chrome/120.0.0.0 Safari/537.36'
 }
 
-MAX_NEW_CASES = 7
+MAX_NEW_CASES = 15
 
 
 def fetch_news(query, days=15):
@@ -182,7 +182,7 @@ def scan_for_cases():
 
         per_query = 0
         for article in articles:
-            if per_query >= 2 or total_processed >= MAX_NEW_CASES:
+            if per_query >= 3 or total_processed >= MAX_NEW_CASES:
                 break
 
             existing = LegalCase.query.filter_by(source_url=article['url']).first()
