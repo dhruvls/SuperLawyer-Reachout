@@ -10,20 +10,20 @@ from app.ai.gemma import analyze_case
 
 
 LEGAL_QUERIES = [
-    'major lawsuit filed',
-    'legal case ruling',
-    'court case lawyer',
-    'high profile trial',
-    'legal dispute settlement',
-    'class action lawsuit',
-    'corporate litigation',
+    'India Supreme Court landmark case',
+    'India High Court ruling lawyer',
+    'Indian corporate lawsuit NCLT',
+    'SEBI enforcement action India',
+    'India legal dispute settlement',
+    'India criminal trial high profile',
+    'Indian antitrust CCI ruling',
 ]
 
 
 def fetch_news(query, days=15):
     """Fetch legal news from Bing News RSS (works from cloud servers)."""
     encoded_query = quote_plus(query)
-    url = f"https://www.bing.com/news/search?q={encoded_query}&format=rss&count=15"
+    url = f"https://www.bing.com/news/search?q={encoded_query}&format=rss&count=10&mkt=en-IN"
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -87,47 +87,56 @@ def scan_for_cases():
         articles = fetch_news(query, days=15)
         current_app.logger.warning(f"Query '{query}': {len(articles)} articles")
 
+        processed = 0
         for article in articles:
+            if processed >= 3:
+                break
+
             existing = LegalCase.query.filter_by(source_url=article['url']).first()
             if existing:
                 continue
 
-            article_text = fetch_article_text(article['url'])
-            if len(article_text) < 100:
-                current_app.logger.warning(
-                    f"Skipping (short: {len(article_text)}): {article['title'][:60]}"
-                )
-                continue
-
-            current_app.logger.warning(f"Analyzing: {article['title'][:60]}")
-            analysis = analyze_case(article['title'], article_text)
-
-            case = LegalCase(
-                title=article['title'],
-                summary=analysis.get('summary', article_text[:300]) if analysis else article_text[:300],
-                source_url=article['url'],
-                source_name=article['source'],
-                published_date=article['published'],
-                status='active',
-            )
-
-            if analysis:
-                import json
-                case.ai_analysis = json.dumps(analysis)
-                case.trending_score = _compute_trending_score(analysis)
-
-                for lawyer_data in analysis.get('lawyers', []):
-                    lawyer = Lawyer(
-                        name=lawyer_data.get('name', 'Unknown'),
-                        firm=lawyer_data.get('firm', ''),
-                        role=lawyer_data.get('role', 'unknown'),
+            try:
+                article_text = fetch_article_text(article['url'])
+                if len(article_text) < 100:
+                    current_app.logger.warning(
+                        f"Skipping (short: {len(article_text)}): {article['title'][:60]}"
                     )
-                    case.lawyers.append(lawyer)
-            else:
-                case.trending_score = 5.0
+                    continue
 
-            db.session.add(case)
-            new_cases.append(case)
+                current_app.logger.warning(f"Analyzing: {article['title'][:60]}")
+                analysis = analyze_case(article['title'], article_text)
+
+                case = LegalCase(
+                    title=article['title'],
+                    summary=analysis.get('summary', article_text[:300]) if analysis else article_text[:300],
+                    source_url=article['url'],
+                    source_name=article['source'],
+                    published_date=article['published'],
+                    status='active',
+                )
+
+                if analysis:
+                    import json
+                    case.ai_analysis = json.dumps(analysis)
+                    case.trending_score = _compute_trending_score(analysis)
+
+                    for lawyer_data in analysis.get('lawyers', []):
+                        lawyer = Lawyer(
+                            name=lawyer_data.get('name', 'Unknown'),
+                            firm=lawyer_data.get('firm', ''),
+                            role=lawyer_data.get('role', 'unknown'),
+                        )
+                        case.lawyers.append(lawyer)
+                else:
+                    case.trending_score = 5.0
+
+                db.session.add(case)
+                new_cases.append(case)
+                processed += 1
+            except Exception as e:
+                current_app.logger.error(f"Error processing article '{article['title'][:50]}': {e}")
+                continue
 
     db.session.commit()
     current_app.logger.warning(f"Scan complete: {len(new_cases)} new cases")
@@ -147,7 +156,8 @@ def _compute_trending_score(analysis):
         score += 1.0
 
     area = analysis.get('practice_area', '').lower()
-    high_interest = ['corporate', 'criminal', 'antitrust', 'securities', 'ip', 'constitutional']
+    high_interest = ['corporate', 'criminal', 'antitrust', 'securities', 'ip', 'constitutional',
+                      'nclt', 'sebi', 'cci', 'insolvency', 'banking', 'cyber']
     if any(a in area for a in high_interest):
         score += 1.5
 
