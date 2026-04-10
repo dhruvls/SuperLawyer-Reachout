@@ -131,6 +131,89 @@ def clear_cases():
     return redirect(url_for('cases.case_list'))
 
 
+@cases_bp.route('/cases/debug')
+@login_required
+def debug_api():
+    """Test the AI API and Google Search to diagnose scan issues."""
+    from google import genai
+    from google.genai import types
+    import traceback
+
+    results = {}
+    api_key = current_app.config.get('GOOGLE_AI_API_KEY')
+    model_name = current_app.config.get('GEMMA_MODEL', 'gemma-4-27b-it')
+    results['api_key_set'] = bool(api_key)
+    results['model_name'] = model_name
+
+    if not api_key:
+        return jsonify(results)
+
+    client = genai.Client(api_key=api_key)
+
+    # List available models
+    try:
+        models = []
+        for m in client.models.list():
+            name = m.name if hasattr(m, 'name') else str(m)
+            if 'gemma' in name.lower() or 'gemini' in name.lower():
+                models.append(name)
+        results['available_models'] = models[:20]
+    except Exception as e:
+        results['list_models_error'] = str(e)
+
+    # Test basic generation
+    try:
+        resp = client.models.generate_content(
+            model=model_name,
+            contents='Say hello in one word.'
+        )
+        results['basic_generation'] = resp.text[:200]
+    except Exception as e:
+        results['basic_generation_error'] = str(e)
+        results['basic_traceback'] = traceback.format_exc()
+
+    # Test Google Search
+    try:
+        config = types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())]
+        )
+        resp = client.models.generate_content(
+            model=model_name,
+            contents='Search for the latest Indian Supreme Court case from April 2026. Return the case title.',
+            config=config,
+        )
+        results['search_generation'] = resp.text[:500]
+
+        # Check grounding metadata
+        sources = []
+        for candidate in resp.candidates:
+            meta = getattr(candidate, 'grounding_metadata', None)
+            if meta:
+                chunks = getattr(meta, 'grounding_chunks', [])
+                for chunk in chunks:
+                    web = getattr(chunk, 'web', None)
+                    if web:
+                        sources.append(getattr(web, 'uri', ''))
+        results['search_sources'] = sources[:5]
+    except Exception as e:
+        results['search_error'] = str(e)
+        results['search_traceback'] = traceback.format_exc()
+
+    # If search failed with configured model, try gemini-2.0-flash
+    if 'search_error' in results:
+        try:
+            resp = client.models.generate_content(
+                model='gemini-2.0-flash',
+                contents='Search for the latest Indian Supreme Court case. Return the title.',
+                config=config,
+            )
+            results['gemini_flash_search'] = resp.text[:500]
+        except Exception as e:
+            results['gemini_flash_error'] = str(e)
+
+    return jsonify(results)
+
+
 @cases_bp.route('/lawyers/<int:lawyer_id>/update-email', methods=['POST'])
 @login_required
 def update_lawyer_email(lawyer_id):
