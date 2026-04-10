@@ -22,13 +22,21 @@ LEGAL_QUERIES = [
 
 def fetch_google_news(query, days=15):
     """Fetch legal news from Google News RSS."""
-    encoded_query = quote(f"{query} when:{days}d")
+    encoded_query = quote(query)
     url = (
         f"https://news.google.com/rss/search?"
-        f"q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
+        f"q={encoded_query}+when:{days}d&hl=en-US&gl=US&ceid=US:en"
     )
     try:
-        feed = feedparser.parse(url)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                          'AppleWebKit/537.36 (KHTML, like Gecko) '
+                          'Chrome/120.0.0.0 Safari/537.36'
+        }
+        resp = requests.get(url, headers=headers, timeout=15)
+        current_app.logger.info(f"Google News fetch [{query}]: status={resp.status_code}, len={len(resp.text)}")
+        feed = feedparser.parse(resp.text)
+        current_app.logger.info(f"Google News parsed [{query}]: {len(feed.entries)} entries")
         articles = []
         for entry in feed.entries[:10]:
             published = None
@@ -68,9 +76,11 @@ def fetch_article_text(url):
 def scan_for_cases():
     """Scan news sources for recent legal cases and store them."""
     new_cases = []
+    current_app.logger.info("Starting case scan...")
 
     for query in LEGAL_QUERIES:
         articles = fetch_google_news(query, days=15)
+        current_app.logger.info(f"Query '{query}': {len(articles)} articles found")
 
         for article in articles:
             existing = LegalCase.query.filter_by(source_url=article['url']).first()
@@ -79,6 +89,7 @@ def scan_for_cases():
 
             article_text = fetch_article_text(article['url'])
             if len(article_text) < 100:
+                current_app.logger.info(f"Skipping article (too short: {len(article_text)} chars): {article['title'][:60]}")
                 continue
 
             # AI analysis
