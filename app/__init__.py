@@ -33,6 +33,7 @@ def create_app():
     with app.app_context():
         from app import models  # noqa: F401
         db.create_all()
+        _migrate_columns(app)
         _seed_admin(app)
 
     @app.cli.command('create-user')
@@ -52,6 +53,20 @@ def create_app():
         click.echo(f'User {email} created successfully.')
 
     return app
+
+
+def _migrate_columns(app):
+    """Add columns that db.create_all() can't add to existing tables."""
+    from sqlalchemy import text, inspect as sa_inspect
+    try:
+        with db.engine.connect() as conn:
+            columns = [c['name'] for c in sa_inspect(db.engine).get_columns('lawyer')]
+            if 'email_source' not in columns:
+                conn.execute(text("ALTER TABLE lawyer ADD COLUMN email_source VARCHAR(500)"))
+                conn.commit()
+                app.logger.info('Added email_source column to lawyer table.')
+    except Exception:
+        pass
 
 
 def _seed_admin(app):

@@ -18,12 +18,30 @@ def analyze_case(title, article_text):
     if not model:
         return None
 
-    prompt = f"""Analyze this legal case from the news and return a JSON object with these fields:
-- "summary": A 2-3 sentence summary of the case
-- "lawyers": A list of objects with "name", "firm", "role" (partner/associate/counsel/judge/prosecutor/defense attorney/unknown)
-- "status": Whether the case is "active", "concluded", or "developing"
+    prompt = f"""You are an expert in Indian law. Analyze this legal case news article.
+
+CRITICAL: Extract the ACTUAL FULL NAMES of lawyers and advocates mentioned in the article.
+Look for these Indian legal titles and roles:
+- Senior Advocate / Sr. Adv.
+- Advocate / Adv.
+- Solicitor General / Additional Solicitor General
+- Advocate General / Additional Advocate General
+- Standing Counsel
+- Amicus Curiae
+- Any named attorneys, barristers, or legal representatives
+
+DO NOT return "Unknown" as a name. If no lawyer names are explicitly mentioned, return an EMPTY lawyers list.
+
+Return a JSON object with:
+- "summary": 2-3 sentence summary
+- "lawyers": List of objects with:
+  - "name": FULL NAME only (e.g. "Harish Salve", "Kapil Sibal") - NEVER "Unknown"
+  - "firm": Law firm or organization (e.g. "AZB & Partners", "Cyril Amarchand Mangaldas", or role like "Solicitor General of India")
+  - "role": senior advocate / advocate / solicitor general / counsel for petitioner / counsel for respondent / amicus curiae / judge
+- "status": "active", "concluded", or "developing"
 - "trending_reason": Why this case is newsworthy
-- "practice_area": The area of law (e.g. corporate, criminal, IP, employment)
+- "practice_area": Area of law (constitutional, corporate, criminal, tax, IP, environmental, cyber, insolvency, etc.)
+- "court": Which court (Supreme Court of India, Delhi High Court, Bombay High Court, NCLT, NCLAT, etc.)
 
 Title: {title}
 
@@ -37,10 +55,49 @@ Return ONLY valid JSON, no markdown fences."""
         text = response.text.strip()
         if text.startswith('```'):
             text = text.split('\n', 1)[1].rsplit('```', 1)[0].strip()
-        return json.loads(text)
+        result = json.loads(text)
+        # Filter out any "Unknown" that slipped through
+        if 'lawyers' in result:
+            result['lawyers'] = [
+                l for l in result['lawyers']
+                if l.get('name', '').lower() not in ('unknown', 'n/a', '', 'not mentioned')
+            ]
+        return result
     except Exception as e:
         current_app.logger.error(f"Gemma analyze_case error: {e}")
         return None
+
+
+def identify_lawyers_from_search(case_title, search_text):
+    """Use AI to extract lawyer names from web search results about a case."""
+    model = _get_model()
+    if not model:
+        return []
+
+    prompt = f"""From these web search results about the Indian legal case "{case_title}",
+extract the names of lawyers, advocates, and senior counsel involved.
+
+Search Results:
+{search_text[:2500]}
+
+Return a JSON list of objects, each with:
+- "name": Full name (MUST be a real person's name, NEVER "Unknown")
+- "firm": Law firm or organization
+- "role": Their role in the case
+
+Only include people whose full names are clearly stated. Return ONLY valid JSON, no markdown fences.
+If no names found, return an empty list []."""
+
+    try:
+        response = model.generate_content(prompt)
+        text = response.text.strip()
+        if text.startswith('```'):
+            text = text.split('\n', 1)[1].rsplit('```', 1)[0].strip()
+        result = json.loads(text)
+        return [l for l in result if l.get('name', '').lower() not in ('unknown', 'n/a', '')]
+    except Exception as e:
+        current_app.logger.error(f"Gemma identify_lawyers error: {e}")
+        return []
 
 
 def generate_outreach_email(lawyer_name, lawyer_firm, lawyer_role, case_title, case_summary, email_type='primary'):

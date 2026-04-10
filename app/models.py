@@ -51,6 +51,7 @@ class Lawyer(db.Model):
     firm = db.Column(db.String(300))
     role = db.Column(db.String(100))
     linkedin_url = db.Column(db.String(500))
+    email_source = db.Column(db.String(500))
     case_id = db.Column(db.Integer, db.ForeignKey('legal_case.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     outreach_emails = db.relationship('OutreachEmail', backref='lawyer', lazy=True)

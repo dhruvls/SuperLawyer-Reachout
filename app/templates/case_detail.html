@@ -111,9 +111,20 @@
                     <small class="text-muted d-block"><i class="bi bi-building"></i> {{ lawyer.firm }}</small>
                     {% endif %}
 
+                    {% if lawyer.linkedin_url %}
+                    <a href="{{ lawyer.linkedin_url }}" target="_blank" class="text-decoration-none d-block mt-1">
+                        <small class="text-primary"><i class="bi bi-linkedin"></i> LinkedIn Profile</small>
+                    </a>
+                    {% endif %}
+
                     {% if lawyer.email %}
                     <small class="text-success d-block mt-1">
                         <i class="bi bi-envelope-check"></i> {{ lawyer.email }}
+                        {% if lawyer.email_source %}
+                        <a href="{{ lawyer.email_source }}" target="_blank" class="text-muted ms-1" title="Email source">
+                            <i class="bi bi-box-arrow-up-right"></i> source
+                        </a>
+                        {% endif %}
                     </small>
                     {% else %}
                     <!-- Add Email Form -->
