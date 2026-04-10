@@ -1,32 +1,45 @@
 import json
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from flask import current_app
 
 
-def _get_model():
+def _get_client():
     api_key = current_app.config.get('GOOGLE_AI_API_KEY')
     if not api_key:
         return None
-    genai.configure(api_key=api_key)
-    model_name = current_app.config.get('GEMMA_MODEL', 'gemma-3-27b-it')
-    return genai.GenerativeModel(model_name)
+    return genai.Client(api_key=api_key)
 
 
-def _get_search_model():
-    """Get Gemini model with Google Search grounding (Search only works with Gemini, not Gemma)."""
-    api_key = current_app.config.get('GOOGLE_AI_API_KEY')
-    if not api_key:
+def _model():
+    return current_app.config.get('GEMMA_MODEL', 'gemma-4-27b-it')
+
+
+def _parse_json(text):
+    text = text.strip()
+    if text.startswith('```'):
+        text = text.split('\n', 1)[1].rsplit('```', 1)[0].strip()
+    return json.loads(text)
+
+
+def _generate(prompt, use_search=False):
+    """Generate content, optionally with Google Search grounding."""
+    client = _get_client()
+    if not client:
         return None
-    genai.configure(api_key=api_key)
-    search_model = current_app.config.get('SEARCH_MODEL', 'gemini-2.0-flash')
-    try:
-        google_search_tool = genai.protos.Tool(
-            google_search_retrieval=genai.protos.GoogleSearchRetrieval()
+
+    config = None
+    if use_search:
+        config = types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())]
         )
-        return genai.GenerativeModel(search_model, tools=[google_search_tool])
-    except Exception as e:
-        current_app.logger.error(f"Google Search tool init failed: {e}")
-        return None
+
+    response = client.models.generate_content(
+        model=_model(),
+        contents=prompt,
+        config=config,
+    )
+    return response
 
 
 def _extract_sources(response):
@@ -50,20 +63,8 @@ def _extract_sources(response):
     return sources
 
 
-def _parse_json(text):
-    """Parse JSON from model response, stripping markdown fences."""
-    text = text.strip()
-    if text.startswith('```'):
-        text = text.split('\n', 1)[1].rsplit('```', 1)[0].strip()
-    return json.loads(text)
-
-
 def search_legal_news(query):
-    """Use AI + Google Search to find recent Indian legal cases."""
-    model = _get_search_model()
-    if not model:
-        return []
-
+    """Use Gemma + Google Search to find recent Indian legal cases."""
     prompt = f"""Search for recent Indian legal news (past 2 weeks) about: {query}
 
 For each real news article found, return:
@@ -84,19 +85,20 @@ IMPORTANT:
 Return ONLY a valid JSON array, no markdown fences."""
 
     try:
-        response = model.generate_content(prompt)
+        response = _generate(prompt, use_search=True)
+        if not response:
+            return []
+
         articles = _parse_json(response.text)
         if not isinstance(articles, list):
             articles = [articles]
 
-        # Supplement URLs from grounding metadata
         sources = _extract_sources(response)
         for i, article in enumerate(articles):
             if not article.get('source_url') and i < len(sources):
                 article['source_url'] = sources[i]['url']
             if not article.get('source_name') and i < len(sources):
                 article['source_name'] = sources[i].get('title', 'News')
-            # Filter out "Unknown" lawyers
             if 'lawyers' in article:
                 article['lawyers'] = [
                     l for l in article['lawyers']
@@ -111,11 +113,7 @@ Return ONLY a valid JSON array, no markdown fences."""
 
 
 def search_case_lawyers(case_title):
-    """Use AI + Google Search to find lawyers involved in an Indian legal case."""
-    model = _get_search_model()
-    if not model:
-        return []
-
+    """Use Gemma + Google Search to find lawyers involved in an Indian legal case."""
     prompt = f"""Search for the lawyers, advocates, and senior counsel involved in this Indian legal case: "{case_title}"
 
 For each lawyer found, provide:
@@ -126,7 +124,9 @@ For each lawyer found, provide:
 Return ONLY a valid JSON array. If none found, return []. No markdown fences."""
 
     try:
-        response = model.generate_content(prompt)
+        response = _generate(prompt, use_search=True)
+        if not response:
+            return []
         result = _parse_json(response.text)
         if not isinstance(result, list):
             result = []
@@ -137,7 +137,7 @@ Return ONLY a valid JSON array. If none found, return []. No markdown fences."""
 
 
 def search_lawyers_contact(case_title, lawyers):
-    """Use AI + Google Search to find email and LinkedIn for lawyers in a case."""
+    """Use Gemma + Google Search to find email and LinkedIn for lawyers."""
     if not lawyers:
         return []
 
@@ -145,10 +145,6 @@ def search_lawyers_contact(case_title, lawyers):
         f"- {l.get('name', '')} ({l.get('firm', '')}, {l.get('role', '')})"
         for l in lawyers
     )
-
-    model = _get_search_model()
-    if not model:
-        return lawyers
 
     prompt = f"""Search for the professional contact information of these Indian lawyers involved in "{case_title}":
 
@@ -167,14 +163,15 @@ Return a JSON array where each object has:
 Return ONLY valid JSON, no markdown fences."""
 
     try:
-        response = model.generate_content(prompt)
+        response = _generate(prompt, use_search=True)
+        if not response:
+            return []
+
         result = _parse_json(response.text)
         if not isinstance(result, list):
             result = []
 
-        # Supplement sources from grounding metadata
         sources = _extract_sources(response)
-
         for item in result:
             if not item.get('email_source') and sources:
                 item['email_source'] = sources[0]['url']
@@ -187,14 +184,10 @@ Return ONLY valid JSON, no markdown fences."""
 
 def analyze_case(title, article_text):
     """Analyze a legal case article and extract structured info."""
-    model = _get_model()
-    if not model:
-        return None
-
     prompt = f"""You are an expert in Indian law. Analyze this legal case news article.
 
-CRITICAL: Extract the ACTUAL FULL NAMES of lawyers and advocates mentioned.
-DO NOT return "Unknown" as a name. If no names are mentioned, return an EMPTY lawyers list.
+Extract ACTUAL FULL NAMES of lawyers/advocates mentioned. Never return "Unknown".
+If no names are mentioned, return an EMPTY lawyers list.
 
 Return a JSON object with:
 - "summary": 2-3 sentence summary
@@ -212,7 +205,9 @@ Article:
 Return ONLY valid JSON, no markdown fences."""
 
     try:
-        response = model.generate_content(prompt)
+        response = _generate(prompt)
+        if not response:
+            return None
         result = _parse_json(response.text)
         if 'lawyers' in result:
             result['lawyers'] = [
@@ -227,10 +222,6 @@ Return ONLY valid JSON, no markdown fences."""
 
 def generate_outreach_email(lawyer_name, lawyer_firm, lawyer_role, case_title, case_summary, email_type='primary'):
     """Generate a personalized outreach email."""
-    model = _get_model()
-    if not model:
-        return None
-
     if email_type == 'followup':
         prompt = f"""Write a brief, professional follow-up email to a lawyer about a legal case.
 This is a follow-up to a previous email that was sent 3-5 days ago.
@@ -263,7 +254,9 @@ Return JSON with "subject" and "body" fields. Body should use \\n for newlines.
 Return ONLY valid JSON, no markdown fences."""
 
     try:
-        response = model.generate_content(prompt)
+        response = _generate(prompt)
+        if not response:
+            return None
         return _parse_json(response.text)
     except Exception as e:
         current_app.logger.error(f"Gemma email generation error: {e}")
@@ -272,10 +265,6 @@ Return ONLY valid JSON, no markdown fences."""
 
 def search_cases(query, cases_data):
     """Use AI to rank/search cases by relevance to a query."""
-    model = _get_model()
-    if not model:
-        return cases_data
-
     cases_text = "\n".join(
         f"ID:{c['id']} | {c['title']} | {c.get('summary', '')[:100]}"
         for c in cases_data[:20]
@@ -291,7 +280,9 @@ Cases:
 Return ONLY a JSON array of ID numbers, e.g. [3, 1, 5]. No markdown fences."""
 
     try:
-        response = model.generate_content(prompt)
+        response = _generate(prompt)
+        if not response:
+            return cases_data
         ranked_ids = _parse_json(response.text)
         id_order = {cid: i for i, cid in enumerate(ranked_ids)}
         return sorted(cases_data, key=lambda c: id_order.get(c['id'], 999))
