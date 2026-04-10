@@ -1,7 +1,7 @@
 import feedparser
 import requests
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote
+from urllib.parse import quote_plus
 from bs4 import BeautifulSoup
 from flask import current_app
 from app import db
@@ -20,13 +20,10 @@ LEGAL_QUERIES = [
 ]
 
 
-def fetch_google_news(query, days=15):
-    """Fetch legal news from Google News RSS."""
-    encoded_query = quote(query)
-    url = (
-        f"https://news.google.com/rss/search?"
-        f"q={encoded_query}+when:{days}d&hl=en-US&gl=US&ceid=US:en"
-    )
+def fetch_news(query, days=15):
+    """Fetch legal news from Bing News RSS (works from cloud servers)."""
+    encoded_query = quote_plus(query)
+    url = f"https://www.bing.com/news/search?q={encoded_query}&format=rss&count=15"
     try:
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -34,31 +31,39 @@ def fetch_google_news(query, days=15):
                           'Chrome/120.0.0.0 Safari/537.36'
         }
         resp = requests.get(url, headers=headers, timeout=15)
-        current_app.logger.info(f"Google News fetch [{query}]: status={resp.status_code}, len={len(resp.text)}")
+        current_app.logger.warning(f"News fetch [{query}]: status={resp.status_code}, len={len(resp.text)}")
         feed = feedparser.parse(resp.text)
-        current_app.logger.info(f"Google News parsed [{query}]: {len(feed.entries)} entries")
+        current_app.logger.warning(f"News parsed [{query}]: {len(feed.entries)} entries")
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         articles = []
         for entry in feed.entries[:10]:
             published = None
             if hasattr(entry, 'published_parsed') and entry.published_parsed:
                 published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                if published < cutoff:
+                    continue
             articles.append({
                 'title': entry.get('title', ''),
                 'url': entry.get('link', ''),
-                'source': entry.get('source', {}).get('title', 'Google News'),
+                'source': entry.get('source', {}).get('title', 'News'),
                 'published': published,
             })
         return articles
     except Exception as e:
-        current_app.logger.error(f"Google News fetch error: {e}")
+        current_app.logger.error(f"News fetch error: {e}")
         return []
 
 
 def fetch_article_text(url):
     """Scrape article text from a URL."""
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (compatible; LegalTracker/1.0)'}
-        resp = requests.get(url, headers=headers, timeout=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                          'AppleWebKit/537.36 (KHTML, like Gecko) '
+                          'Chrome/120.0.0.0 Safari/537.36'
+        }
+        resp = requests.get(url, headers=headers, timeout=10, allow_redirects=True)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, 'html.parser')
 
@@ -76,11 +81,11 @@ def fetch_article_text(url):
 def scan_for_cases():
     """Scan news sources for recent legal cases and store them."""
     new_cases = []
-    current_app.logger.info("Starting case scan...")
+    current_app.logger.warning("Starting case scan...")
 
     for query in LEGAL_QUERIES:
-        articles = fetch_google_news(query, days=15)
-        current_app.logger.info(f"Query '{query}': {len(articles)} articles found")
+        articles = fetch_news(query, days=15)
+        current_app.logger.warning(f"Query '{query}': {len(articles)} articles")
 
         for article in articles:
             existing = LegalCase.query.filter_by(source_url=article['url']).first()
@@ -89,10 +94,12 @@ def scan_for_cases():
 
             article_text = fetch_article_text(article['url'])
             if len(article_text) < 100:
-                current_app.logger.info(f"Skipping article (too short: {len(article_text)} chars): {article['title'][:60]}")
+                current_app.logger.warning(
+                    f"Skipping (short: {len(article_text)}): {article['title'][:60]}"
+                )
                 continue
 
-            # AI analysis
+            current_app.logger.warning(f"Analyzing: {article['title'][:60]}")
             analysis = analyze_case(article['title'], article_text)
 
             case = LegalCase(
@@ -116,11 +123,14 @@ def scan_for_cases():
                         role=lawyer_data.get('role', 'unknown'),
                     )
                     case.lawyers.append(lawyer)
+            else:
+                case.trending_score = 5.0
 
             db.session.add(case)
             new_cases.append(case)
 
     db.session.commit()
+    current_app.logger.warning(f"Scan complete: {len(new_cases)} new cases")
     return new_cases
 
 
