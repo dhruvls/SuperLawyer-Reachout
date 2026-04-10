@@ -33,6 +33,7 @@ def create_app():
     with app.app_context():
         from app import models  # noqa: F401
         db.create_all()
+        _seed_admin(app)
 
     @app.cli.command('create-user')
     @click.argument('email')
@@ -51,3 +52,25 @@ def create_app():
         click.echo(f'User {email} created successfully.')
 
     return app
+
+
+def _seed_admin(app):
+    """Create default admin user on first run."""
+    import os
+    from app.models import User
+
+    email = os.getenv('ADMIN_EMAIL')
+    password = os.getenv('ADMIN_PASSWORD')
+    name = os.getenv('ADMIN_NAME', 'Admin')
+
+    if not email or not password:
+        return
+
+    if User.query.filter_by(email=email.lower()).first():
+        return
+
+    user = User(name=name, email=email.lower())
+    user.set_password(password)
+    db.session.add(user)
+    db.session.commit()
+    app.logger.info(f'Admin user {email} created.')
