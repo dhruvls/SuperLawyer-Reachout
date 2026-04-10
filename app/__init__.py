@@ -62,6 +62,15 @@ def create_app():
                 return color
         return 'secondary'
 
+    @app.template_filter('from_json')
+    def from_json_filter(value):
+        if not value:
+            return []
+        try:
+            return json.loads(value)
+        except Exception:
+            return []
+
     from app.auth.routes import auth_bp
     from app.cases.routes import cases_bp
     from app.outreach.routes import outreach_bp
@@ -139,10 +148,19 @@ def _migrate_columns(app):
     try:
         with db.engine.connect() as conn:
             columns = [c['name'] for c in sa_inspect(db.engine).get_columns('lawyer')]
-            if 'email_source' not in columns:
-                conn.execute(text("ALTER TABLE lawyer ADD COLUMN email_source VARCHAR(500)"))
-                conn.commit()
-                app.logger.info('Added email_source column.')
+            new_cols = {
+                'email_source': 'VARCHAR(500)',
+                'verified': 'BOOLEAN DEFAULT FALSE',
+                'confidence_score': 'FLOAT DEFAULT 0.0',
+                'verification_sources': 'TEXT',
+            }
+            for col_name, col_type in new_cols.items():
+                if col_name not in columns:
+                    conn.execute(text(
+                        f"ALTER TABLE lawyer ADD COLUMN {col_name} {col_type}"
+                    ))
+                    conn.commit()
+                    app.logger.info(f'Added {col_name} column.')
     except Exception:
         pass
 

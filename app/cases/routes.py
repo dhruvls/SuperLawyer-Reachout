@@ -269,10 +269,12 @@ def lawyer_directory():
 
     total = Lawyer.query.count()
     with_email = Lawyer.query.filter(Lawyer.email.isnot(None)).count()
+    verified_count = Lawyer.query.filter(Lawyer.verified.is_(True)).count()
 
     return render_template('lawyers.html', lawyers=lawyers_page.items, pagination=lawyers_page,
                            query=query, email_status=email_filter,
-                           total=total, with_email=with_email, without_email=total - with_email)
+                           total=total, with_email=with_email, without_email=total - with_email,
+                           verified_count=verified_count)
 
 
 @cases_bp.route('/lawyers/<int:lawyer_id>/update-email', methods=['POST'])

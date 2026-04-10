@@ -74,6 +74,9 @@ class Lawyer(db.Model):
     role = db.Column(db.String(100))
     linkedin_url = db.Column(db.String(500))
     email_source = db.Column(db.String(500))
+    verified = db.Column(db.Boolean, default=False)
+    confidence_score = db.Column(db.Float, default=0.0)
+    verification_sources = db.Column(db.Text)  # JSON array of source objects
     case_id = db.Column(db.Integer, db.ForeignKey('legal_case.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     outreach_emails = db.relationship('OutreachEmail', backref='lawyer', lazy=True)

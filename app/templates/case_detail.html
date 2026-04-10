@@ -141,9 +141,34 @@
             <div class="card-body">
                 {% for lawyer in case.lawyers %}
                 <div class="lawyer-card mb-3 p-3 rounded">
-                    <h6 class="mb-1">{{ lawyer.name }}</h6>
+                    <div class="d-flex align-items-center gap-2 mb-1">
+                        <h6 class="mb-0">{{ lawyer.name }}</h6>
+                        {% if lawyer.verified %}
+                        <span class="badge bg-success badge-sm"><i class="bi bi-patch-check-fill"></i> Verified</span>
+                        {% else %}
+                        <span class="badge bg-warning badge-sm text-dark"><i class="bi bi-question-circle"></i> Unverified</span>
+                        {% endif %}
+                    </div>
+                    {% if lawyer.confidence_score %}
+                    <div class="progress mb-1" style="height: 4px;">
+                        <div class="progress-bar bg-{{ 'success' if lawyer.confidence_score >= 0.6 else 'warning' if lawyer.confidence_score >= 0.3 else 'danger' }}"
+                             style="width: {{ (lawyer.confidence_score * 100)|int }}%"></div>
+                    </div>
+                    <small class="text-muted">{{ (lawyer.confidence_score * 100)|int }}% confidence</small>
+                    {% endif %}
                     {% if lawyer.role %}<small class="text-muted d-block">{{ lawyer.role }}</small>{% endif %}
                     {% if lawyer.firm %}<small class="text-muted d-block"><i class="bi bi-building"></i> {{ lawyer.firm }}</small>{% endif %}
+
+                    {% set vsources = lawyer.verification_sources|from_json %}
+                    {% if vsources %}
+                    <div class="mt-1">
+                        {% for src in vsources %}
+                        <span class="badge bg-light text-dark border me-1" style="font-size:.65rem;">
+                            <i class="bi bi-check2"></i> {{ src.detail }}
+                        </span>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
 
                     {% if lawyer.linkedin_url %}
                     <a href="{{ lawyer.linkedin_url }}" target="_blank" class="text-decoration-none d-block mt-1">

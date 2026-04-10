@@ -30,6 +30,24 @@ HEADERS = {
 MAX_NEW_CASES = 15
 MAX_PER_QUERY = 3
 
+# Indian legal title prefixes for name normalization
+LEGAL_TITLES = [
+    'senior advocate', 'sr. advocate', 'sr advocate',
+    'advocate', 'adv.', 'adv',
+    'justice', "hon'ble justice", "hon'ble",
+    'solicitor general', 'attorney general',
+    'additional solicitor general', 'asg',
+    'senior counsel', 'counsel',
+    'mr.', 'mr', 'ms.', 'ms', 'smt.', 'smt', 'dr.', 'dr',
+    'shri',
+]
+
+NAME_BLOCKLIST = {
+    'the court', 'the bench', 'the judge', 'supreme court', 'high court',
+    'district court', 'sessions court', 'india', 'government', 'state',
+    'union of india', 'central government', 'state government',
+}
+
 
 def fetch_news(query, days=15):
     """Fetch legal news from Bing News RSS."""
@@ -146,6 +164,194 @@ def find_lawyer_email(name, firm):
         return None, None, None
 
 
+# ── Multi-source verification helpers ────────────────────────────
+
+def _normalize_name(name):
+    """Normalize a lawyer name for fuzzy comparison."""
+    if not name:
+        return ''
+    n = name.lower().strip()
+    for title in sorted(LEGAL_TITLES, key=len, reverse=True):
+        if n.startswith(title + ' '):
+            n = n[len(title):].strip()
+    n = re.sub(r'[.,;:()\[\]\'"]', '', n)
+    n = re.sub(r'\s+', ' ', n).strip()
+    return n
+
+
+def _names_match(name1, name2):
+    """Check if two lawyer names likely refer to the same person."""
+    n1 = _normalize_name(name1)
+    n2 = _normalize_name(name2)
+    if not n1 or not n2 or len(n1) < 3 or len(n2) < 3:
+        return False
+    if n1 == n2:
+        return True
+    parts1 = n1.split()
+    parts2 = n2.split()
+    if len(parts1) >= 2 and len(parts2) >= 2:
+        if parts1[-1] == parts2[-1] and parts1[0][0] == parts2[0][0]:
+            return True
+    if len(n1) > 6 and len(n2) > 6:
+        if n1 in n2 or n2 in n1:
+            return True
+    return False
+
+
+def _extract_names_from_text(text):
+    """Extract lawyer names from legal text using regex patterns."""
+    names = []
+    patterns = [
+        r"(?:Senior\s+)?Advocate\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+        r"Adv\.?\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+        r"(?:represented|appearing|argued|counsel)\s+(?:by\s+)?(?:Senior\s+)?"
+        r"(?:Advocate\s+)?([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+        r"(?:Solicitor\s+General|ASG|Attorney\s+General)\s+"
+        r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+        r"(?:counsel\s+for\s+(?:the\s+)?(?:petitioner|respondent|appellant|"
+        r"defendant)s?)\s*[:\-]?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+    ]
+    for pattern in patterns:
+        for m in re.findall(pattern, text):
+            name = m.strip()
+            if len(name) > 3 and _normalize_name(name) not in NAME_BLOCKLIST:
+                names.append(name)
+    return names
+
+
+def search_indiankanoon(case_title):
+    """Search IndianKanoon.org for lawyer names in a case."""
+    encoded = quote_plus(case_title)
+    url = f"https://indiankanoon.org/search/?formInput={encoded}"
+    lawyers = []
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=10)
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        results = soup.select('.result, .result_title, .snippet')
+        text = ' '.join(r.get_text(' ', strip=True) for r in results[:8])
+        if not text:
+            text = soup.get_text(' ', strip=True)[:5000]
+
+        for name in _extract_names_from_text(text):
+            lawyers.append({'name': name, 'source': 'IndianKanoon'})
+
+        current_app.logger.warning(f"[IK] '{case_title[:40]}': {len(lawyers)} lawyers")
+    except Exception as e:
+        current_app.logger.error(f"[IK] error: {e}")
+    return lawyers
+
+
+def search_legal_news(case_title):
+    """Search LiveLaw, Bar and Bench, SC Observer for lawyer names."""
+    lawyers = []
+    sites = [
+        ('LiveLaw', f"site:livelaw.in {case_title} lawyer advocate"),
+        ('BarAndBench', f"site:barandbench.com {case_title} lawyer advocate"),
+        ('SCObserver', f"site:scobserver.in {case_title} lawyer advocate"),
+    ]
+    for site_name, query in sites:
+        try:
+            encoded = quote_plus(query)
+            url = f"https://www.bing.com/search?q={encoded}&count=3"
+            resp = requests.get(url, headers=HEADERS, timeout=10)
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            snippets = [r.get_text(' ', strip=True) for r in soup.select('.b_algo')]
+            text = ' '.join(snippets)
+
+            # Scrape first matching result page for richer text
+            for a in soup.select('.b_algo h2 a'):
+                href = a.get('href', '')
+                if any(s in href for s in ['livelaw', 'barandbench', 'scobserver']):
+                    try:
+                        page = requests.get(href, headers=HEADERS, timeout=8)
+                        ps = BeautifulSoup(page.text, 'html.parser')
+                        for tag in ps(['script', 'style', 'nav', 'footer']):
+                            tag.decompose()
+                        text += ' ' + ps.get_text(' ', strip=True)[:3000]
+                    except Exception:
+                        pass
+                    break
+
+            for name in _extract_names_from_text(text):
+                lawyers.append({'name': name, 'source': site_name})
+
+            current_app.logger.warning(
+                f"[{site_name}] '{case_title[:40]}': "
+                f"{sum(1 for l in lawyers if l['source'] == site_name)} found"
+            )
+        except Exception as e:
+            current_app.logger.error(f"[{site_name}] error: {e}")
+    return lawyers
+
+
+def cross_verify_lawyers(ai_lawyers, search_lawyers, ik_lawyers, news_lawyers):
+    """Cross-verify lawyer names from multiple sources, assign confidence."""
+    master = []
+
+    def _add(name, firm, role, src_type, src_detail):
+        if not name or _normalize_name(name) in NAME_BLOCKLIST:
+            return
+        if name.lower() in ('unknown', 'n/a', 'not mentioned', 'unnamed'):
+            return
+        for existing in master:
+            if _names_match(existing['name'], name):
+                existing['sources'].append({'type': src_type, 'detail': src_detail})
+                if not existing['firm'] and firm:
+                    existing['firm'] = firm
+                if not existing['role'] and role:
+                    existing['role'] = role
+                return
+        master.append({
+            'name': name, 'firm': firm or '', 'role': role or '',
+            'sources': [{'type': src_type, 'detail': src_detail}],
+        })
+
+    for l in ai_lawyers:
+        _add(l.get('name', ''), l.get('firm', ''), l.get('role', ''),
+             'ai_analysis', 'AI extraction from article')
+    for l in search_lawyers:
+        _add(l.get('name', ''), l.get('firm', ''), l.get('role', ''),
+             'bing_search', 'Bing web search + AI')
+    for l in ik_lawyers:
+        _add(l.get('name', ''), '', '', 'indiankanoon', 'IndianKanoon.org')
+    for l in news_lawyers:
+        _add(l.get('name', ''), '', '', 'legal_news', l.get('source', 'Legal news'))
+
+    for entry in master:
+        n_sources = len(set(s['type'] for s in entry['sources']))
+        if n_sources >= 3:
+            entry['confidence'] = 0.9
+        elif n_sources == 2:
+            entry['confidence'] = 0.6
+        else:
+            entry['confidence'] = 0.3
+        entry['verified'] = n_sources >= 2
+
+    master.sort(key=lambda x: x['confidence'], reverse=True)
+    current_app.logger.warning(
+        f"[VERIFY] {len(master)} lawyers, "
+        f"{sum(1 for l in master if l['verified'])} verified"
+    )
+    return master
+
+
+def _gather_lawyers_multi_source(case_title, article_analysis):
+    """Orchestrate multi-source lawyer discovery and verification."""
+    ai_lawyers = article_analysis.get('lawyers', []) if article_analysis else []
+
+    search_lawyers = []
+    search_text = search_case_lawyers(case_title)
+    if search_text:
+        extracted = identify_lawyers_from_search(case_title, search_text)
+        if extracted:
+            search_lawyers = extracted
+
+    ik_lawyers = search_indiankanoon(case_title)
+    news_lawyers = search_legal_news(case_title)
+
+    return cross_verify_lawyers(ai_lawyers, search_lawyers, ik_lawyers, news_lawyers)
+
+
 def _is_duplicate(title, source_url):
     """Check if case already exists by URL or similar title."""
     if source_url and LegalCase.query.filter_by(source_url=source_url).first():
@@ -193,15 +399,9 @@ def scan_for_cases():
                 current_app.logger.warning(f"[AI] Analyzing: {title[:50]}")
                 analysis = analyze_case(title, article_text)
 
-                # Step 3: If no lawyers found, search web for them
-                if analysis and not analysis.get('lawyers'):
-                    current_app.logger.warning(f"[AI] No lawyers in article, searching web...")
-                    search_text = search_case_lawyers(title)
-                    if search_text:
-                        extra = identify_lawyers_from_search(title, search_text)
-                        if extra:
-                            analysis['lawyers'] = extra
-                            current_app.logger.warning(f"[AI] Found {len(extra)} lawyers via web")
+                # Step 3: Multi-source lawyer verification
+                current_app.logger.warning(f"[VERIFY] Multi-source: {title[:50]}")
+                verified_lawyers = _gather_lawyers_multi_source(title, analysis)
 
                 # Build case
                 case = LegalCase(
@@ -216,24 +416,31 @@ def scan_for_cases():
                 if analysis:
                     case.ai_analysis = json.dumps(analysis)
                     case.trending_score = _compute_trending_score(analysis)
-
-                    # Step 4: Create lawyers and find their emails
-                    for ld in analysis.get('lawyers', []):
-                        name = ld.get('name', '')
-                        firm = ld.get('firm', '')
-                        lawyer = Lawyer(name=name, firm=firm, role=ld.get('role', ''))
-
-                        current_app.logger.warning(f"[CONTACT] Searching for: {name}")
-                        email, linkedin, source = find_lawyer_email(name, firm)
-                        if email:
-                            lawyer.email = email
-                            lawyer.email_source = source
-                        if linkedin:
-                            lawyer.linkedin_url = linkedin
-
-                        case.lawyers.append(lawyer)
                 else:
                     case.trending_score = 5.0
+
+                # Step 4: Create lawyers with verification data
+                for vl in verified_lawyers:
+                    name = vl.get('name', '')
+                    firm = vl.get('firm', '')
+                    lawyer = Lawyer(
+                        name=name, firm=firm, role=vl.get('role', ''),
+                        verified=vl.get('verified', False),
+                        confidence_score=vl.get('confidence', 0.3),
+                        verification_sources=json.dumps(vl.get('sources', [])),
+                    )
+
+                    current_app.logger.warning(
+                        f"[CONTACT] {name} (conf: {vl['confidence']:.1f})"
+                    )
+                    email, linkedin, source = find_lawyer_email(name, firm)
+                    if email:
+                        lawyer.email = email
+                        lawyer.email_source = source
+                    if linkedin:
+                        lawyer.linkedin_url = linkedin
+
+                    case.lawyers.append(lawyer)
 
                 db.session.add(case)
                 db.session.commit()
