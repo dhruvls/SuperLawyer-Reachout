@@ -1,6 +1,7 @@
 import feedparser
 import requests
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 from bs4 import BeautifulSoup
 from flask import current_app
 from app import db
@@ -21,9 +22,10 @@ LEGAL_QUERIES = [
 
 def fetch_google_news(query, days=15):
     """Fetch legal news from Google News RSS."""
+    encoded_query = quote(f"{query} when:{days}d")
     url = (
         f"https://news.google.com/rss/search?"
-        f"q={query}+when:{days}d&hl=en-US&gl=US&ceid=US:en"
+        f"q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
     )
     try:
         feed = feedparser.parse(url)
