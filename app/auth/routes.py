@@ -32,37 +32,6 @@ def login():
     return render_template('login.html')
 
 
-@auth_bp.route('/register', methods=['GET', 'POST'])
-def register():
-    if current_user.is_authenticated:
-        return redirect(url_for('cases.dashboard'))
-
-    if request.method == 'POST':
-        name = request.form.get('name', '').strip()
-        email = request.form.get('email', '').strip().lower()
-        password = request.form.get('password', '')
-        confirm = request.form.get('confirm_password', '')
-
-        if not name or not email or not password:
-            flash('All fields are required.', 'error')
-        elif password != confirm:
-            flash('Passwords do not match.', 'error')
-        elif len(password) < 8:
-            flash('Password must be at least 8 characters.', 'error')
-        elif User.query.filter_by(email=email).first():
-            flash('Email already registered.', 'error')
-        else:
-            user = User(name=name, email=email)
-            user.set_password(password)
-            db.session.add(user)
-            db.session.commit()
-            login_user(user)
-            flash('Account created successfully!', 'success')
-            return redirect(url_for('cases.dashboard'))
-
-    return render_template('register.html')
-
-
 @auth_bp.route('/logout')
 @login_required
 def logout():

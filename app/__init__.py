@@ -1,3 +1,4 @@
+import click
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager
@@ -32,5 +33,21 @@ def create_app():
     with app.app_context():
         from app import models  # noqa: F401
         db.create_all()
+
+    @app.cli.command('create-user')
+    @click.argument('email')
+    @click.argument('name')
+    @click.option('--password', prompt=True, hide_input=True, confirmation_prompt=True)
+    def create_user(email, name, password):
+        """Create a new user. Usage: flask create-user EMAIL NAME"""
+        from app.models import User
+        if User.query.filter_by(email=email.lower()).first():
+            click.echo(f'Error: {email} already exists.')
+            return
+        user = User(name=name, email=email.lower())
+        user.set_password(password)
+        db.session.add(user)
+        db.session.commit()
+        click.echo(f'User {email} created successfully.')
 
     return app
