@@ -112,6 +112,25 @@ def trigger_scan():
     return redirect(url_for('cases.case_list'))
 
 
+@cases_bp.route('/cases/clear', methods=['POST'])
+@login_required
+def clear_cases():
+    """Delete all cases and associated data, then rescan."""
+    try:
+        OutreachEmail.query.delete()
+        Lawyer.query.delete()
+        LegalCase.query.delete()
+        db.session.commit()
+        flash('All old cases cleared.', 'info')
+
+        new_cases = scan_for_cases()
+        flash(f'Fresh scan complete. Found {len(new_cases)} new cases.', 'success')
+    except Exception as e:
+        db.session.rollback()
+        flash(f'Error: {str(e)}', 'error')
+    return redirect(url_for('cases.case_list'))
+
+
 @cases_bp.route('/lawyers/<int:lawyer_id>/update-email', methods=['POST'])
 @login_required
 def update_lawyer_email(lawyer_id):

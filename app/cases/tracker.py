@@ -41,10 +41,15 @@ def scan_for_cases():
             if not title:
                 continue
 
-            # Check duplicates by URL or title
+            # Check duplicates by URL or similar title
             if source_url and LegalCase.query.filter_by(source_url=source_url).first():
                 continue
             if LegalCase.query.filter_by(title=title).first():
+                continue
+            # Fuzzy title check — skip if first 60 chars match any existing case
+            title_prefix = title[:60].lower()
+            existing = LegalCase.query.all()
+            if any(e.title[:60].lower() == title_prefix for e in existing):
                 continue
 
             try:
