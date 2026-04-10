@@ -13,23 +13,20 @@ def _get_model():
 
 
 def _get_search_model():
-    """Get model with Google Search grounding enabled."""
+    """Get Gemini model with Google Search grounding (Search only works with Gemini, not Gemma)."""
     api_key = current_app.config.get('GOOGLE_AI_API_KEY')
     if not api_key:
         return None
     genai.configure(api_key=api_key)
-    model_name = current_app.config.get('GEMMA_MODEL', 'gemma-3-27b-it')
+    search_model = current_app.config.get('SEARCH_MODEL', 'gemini-2.0-flash')
     try:
         google_search_tool = genai.protos.Tool(
             google_search_retrieval=genai.protos.GoogleSearchRetrieval()
         )
-        return genai.GenerativeModel(model_name, tools=[google_search_tool])
-    except Exception:
-        try:
-            return genai.GenerativeModel(model_name, tools="google_search_retrieval")
-        except Exception as e:
-            current_app.logger.error(f"Google Search tool init failed: {e}")
-            return genai.GenerativeModel(model_name)
+        return genai.GenerativeModel(search_model, tools=[google_search_tool])
+    except Exception as e:
+        current_app.logger.error(f"Google Search tool init failed: {e}")
+        return None
 
 
 def _extract_sources(response):
