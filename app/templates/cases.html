@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block title %}Cases - Super Lawyer Reachout{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Legal Cases</h2>
+    <form method="POST" action="{{ url_for('cases.trigger_scan') }}">
+        <button type="submit" class="btn btn-primary">
+            <i class="bi bi-search"></i> Scan for New Cases
+        </button>
+    </form>
+</div>
+
+<!-- Search and Filter -->
+<div class="card shadow-sm mb-4">
+    <div class="card-body">
+        <form method="GET" class="row g-3">
+            <div class="col-md-6">
+                <div class="input-group">
+                    <span class="input-group-text"><i class="bi bi-search"></i></span>
+                    <input type="text" class="form-control" name="q" placeholder="Search cases (AI-powered)..." value="{{ query }}">
+                </div>
+            </div>
+            <div class="col-md-3">
+                <select name="status" class="form-select">
+                    <option value="all" {{ 'selected' if status == 'all' }}>All Status</option>
+                    <option value="active" {{ 'selected' if status == 'active' }}>Active</option>
+                    <option value="monitoring" {{ 'selected' if status == 'monitoring' }}>Monitoring</option>
+                    <option value="archived" {{ 'selected' if status == 'archived' }}>Archived</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <button type="submit" class="btn btn-outline-primary w-100">Filter</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Cases List -->
+{% if cases %}
+<div class="row g-3">
+    {% for case in cases %}
+    <div class="col-lg-6">
+        <div class="card shadow-sm h-100 case-card">
+            <div class="card-body">
+                <div class="d-flex justify-content-between mb-2">
+                    <span class="badge bg-{{ 'success' if case.status == 'active' else 'info' if case.status == 'monitoring' else 'secondary' }}">
+                        {{ case.status }}
+                    </span>
+                    <span class="badge bg-dark">
+                        <i class="bi bi-graph-up"></i> {{ "%.1f"|format(case.trending_score) }}
+                    </span>
+                </div>
+                <h5 class="card-title">
+                    <a href="{{ url_for('cases.case_detail', case_id=case.id) }}" class="text-decoration-none">
+                        {{ case.title[:100] }}{% if case.title|length > 100 %}...{% endif %}
+                    </a>
+                </h5>
+                <p class="card-text text-muted small">
+                    {{ case.summary[:200] if case.summary else 'No summary available' }}{% if case.summary and case.summary|length > 200 %}...{% endif %}
+                </p>
+                <div class="d-flex justify-content-between align-items-center">
+                    <small class="text-muted">
+                        <i class="bi bi-newspaper"></i> {{ case.source_name or 'Unknown' }}
+                        {% if case.published_date %}
+                        &middot; {{ case.published_date.strftime('%b %d') }}
+                        {% endif %}
+                    </small>
+                    <small class="text-muted">
+                        <i class="bi bi-people"></i> {{ case.lawyers|length }} lawyers
+                    </small>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+
+{% if pagination %}
+<nav class="mt-4">
+    <ul class="pagination justify-content-center">
+        {% if pagination.has_prev %}
+        <li class="page-item">
+            <a class="page-link" href="?page={{ pagination.prev_num }}&status={{ status }}&q={{ query }}">Previous</a>
+        </li>
+        {% endif %}
+        {% for p in pagination.iter_pages() %}
+        {% if p %}
+        <li class="page-item {{ 'active' if p == pagination.page }}">
+            <a class="page-link" href="?page={{ p }}&status={{ status }}&q={{ query }}">{{ p }}</a>
+        </li>
+        {% else %}
+        <li class="page-item disabled"><span class="page-link">...</span></li>
+        {% endif %}
+        {% endfor %}
+        {% if pagination.has_next %}
+        <li class="page-item">
+            <a class="page-link" href="?page={{ pagination.next_num }}&status={{ status }}&q={{ query }}">Next</a>
+        </li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+
+{% else %}
+<div class="text-center py-5">
+    <i class="bi bi-inbox text-muted" style="font-size: 3rem;"></i>
+    <h5 class="mt-3 text-muted">No cases found</h5>
+    <p class="text-muted">Click "Scan for New Cases" to discover trending legal cases.</p>
+</div>
+{% endif %}
+{% endblock %}

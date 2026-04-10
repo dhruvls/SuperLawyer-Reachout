@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% block title %}{{ case.title[:50] }} - Super Lawyer Reachout{% endblock %}
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{{ url_for('cases.case_list') }}">Cases</a></li>
+        <li class="breadcrumb-item active">Case Detail</li>
+    </ol>
+</nav>
+
+<div class="row g-4">
+    <!-- Case Info -->
+    <div class="col-lg-8">
+        <div class="card shadow-sm">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-start mb-3">
+                    <h4>{{ case.title }}</h4>
+                    <span class="badge bg-{{ 'success' if case.status == 'active' else 'info' if case.status == 'monitoring' else 'secondary' }} ms-2">
+                        {{ case.status }}
+                    </span>
+                </div>
+
+                <div class="mb-3">
+                    <small class="text-muted">
+                        <i class="bi bi-newspaper"></i> {{ case.source_name or 'Unknown' }}
+                        {% if case.published_date %}
+                        &middot; {{ case.published_date.strftime('%B %d, %Y') }}
+                        {% endif %}
+                        &middot; Trending Score: <strong>{{ "%.1f"|format(case.trending_score) }}/10</strong>
+                    </small>
+                </div>
+
+                {% if case.source_url %}
+                <a href="{{ case.source_url }}" target="_blank" class="btn btn-sm btn-outline-secondary mb-3">
+                    <i class="bi bi-box-arrow-up-right"></i> View Source Article
+                </a>
+                {% endif %}
+
+                <h6>Summary</h6>
+                <p>{{ case.summary or 'No summary available.' }}</p>
+
+                {% if analysis %}
+                <hr>
+                {% if analysis.practice_area %}
+                <p><strong>Practice Area:</strong> {{ analysis.practice_area }}</p>
+                {% endif %}
+                {% if analysis.trending_reason %}
+                <p><strong>Why Trending:</strong> {{ analysis.trending_reason }}</p>
+                {% endif %}
+                {% if analysis.status %}
+                <p><strong>Case Status:</strong> {{ analysis.status }}</p>
+                {% endif %}
+                {% endif %}
+
+                <!-- Status Update -->
+                <hr>
+                <form method="POST" action="{{ url_for('cases.update_case_status', case_id=case.id) }}" class="d-inline-flex gap-2">
+                    <select name="status" class="form-select form-select-sm" style="width: auto;">
+                        <option value="active" {{ 'selected' if case.status == 'active' }}>Active</option>
+                        <option value="monitoring" {{ 'selected' if case.status == 'monitoring' }}>Monitoring</option>
+                        <option value="archived" {{ 'selected' if case.status == 'archived' }}>Archived</option>
+                    </select>
+                    <button type="submit" class="btn btn-sm btn-outline-primary">Update Status</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Outreach Emails for this Case -->
+        {% if emails %}
+        <div class="card shadow-sm mt-4">
+            <div class="card-header bg-white">
+                <h5 class="mb-0">Outreach Emails</h5>
+            </div>
+            <div class="list-group list-group-flush">
+                {% for email in emails %}
+                <div class="list-group-item">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                            <h6 class="mb-0">{{ email.lawyer.name }}</h6>
+                            <small class="text-muted">{{ email.subject }}</small>
+                        </div>
+                        <div>
+                            <span class="badge bg-{{ 'success' if email.status == 'sent' else 'warning' if email.status == 'pending_followup' else 'danger' if email.status == 'failed' else 'secondary' }}">
+                                {{ email.status.replace('_', ' ') }}
+                            </span>
+                            <a href="{{ url_for('outreach.edit_email', email_id=email.id) }}" class="btn btn-sm btn-outline-primary ms-2">View</a>
+                        </div>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Lawyers Sidebar -->
+    <div class="col-lg-4">
+        <div class="card shadow-sm">
+            <div class="card-header bg-white">
+                <h5 class="mb-0"><i class="bi bi-people"></i> Lawyers ({{ case.lawyers|length }})</h5>
+            </div>
+            <div class="card-body">
+                {% if case.lawyers %}
+                {% for lawyer in case.lawyers %}
+                <div class="lawyer-card mb-3 p-3 bg-light rounded">
+                    <h6 class="mb-1">{{ lawyer.name }}</h6>
+                    {% if lawyer.role %}
+                    <small class="text-muted d-block">{{ lawyer.role }}</small>
+                    {% endif %}
+                    {% if lawyer.firm %}
+                    <small class="text-muted d-block"><i class="bi bi-building"></i> {{ lawyer.firm }}</small>
+                    {% endif %}
+
+                    {% if lawyer.email %}
+                    <small class="text-success d-block mt-1">
+                        <i class="bi bi-envelope-check"></i> {{ lawyer.email }}
+                    </small>
+                    {% else %}
+                    <!-- Add Email Form -->
+                    <form method="POST" action="{{ url_for('cases.update_lawyer_email', lawyer_id=lawyer.id) }}" class="mt-2">
+                        <div class="input-group input-group-sm">
+                            <input type="email" name="email" class="form-control" placeholder="Add email...">
+                            <button type="submit" class="btn btn-outline-primary btn-sm">
+                                <i class="bi bi-plus"></i>
+                            </button>
+                        </div>
+                    </form>
+                    {% endif %}
+
+                    <!-- Generate Email Button -->
+                    <div class="mt-2 d-flex gap-1">
+                        <form method="POST" action="{{ url_for('outreach.generate', lawyer_id=lawyer.id) }}">
+                            <input type="hidden" name="email_type" value="primary">
+                            <button type="submit" class="btn btn-sm btn-primary">
+                                <i class="bi bi-pencil"></i> Draft Email
+                            </button>
+                        </form>
+                        <form method="POST" action="{{ url_for('outreach.generate', lawyer_id=lawyer.id) }}">
+                            <input type="hidden" name="email_type" value="followup">
+                            <button type="submit" class="btn btn-sm btn-outline-secondary">
+                                <i class="bi bi-reply"></i> Follow-up
+                            </button>
+                        </form>
+                    </div>
+                </div>
+                {% endfor %}
+                {% else %}
+                <p class="text-muted text-center">No lawyers identified for this case.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

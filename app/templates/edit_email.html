@@ -1,0 +1,94 @@
+{% extends "base.html" %}
+{% block title %}Edit Email - Super Lawyer Reachout{% endblock %}
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+    <ol class="breadcrumb">
+        <li class="breadcrumb-item"><a href="{{ url_for('outreach.outreach_list') }}">Outreach</a></li>
+        <li class="breadcrumb-item active">Edit Email</li>
+    </ol>
+</nav>
+
+<div class="row g-4">
+    <div class="col-lg-8">
+        <div class="card shadow-sm">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                    {% if email.status == 'draft' %}Edit Draft{% else %}View Email{% endif %}
+                </h5>
+                <span class="badge bg-{{ 'success' if email.status == 'sent' else 'warning' if email.status == 'pending_followup' else 'secondary' }}">
+                    {{ email.status.replace('_', ' ') }}
+                </span>
+            </div>
+            <div class="card-body">
+                <form method="POST">
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">To</label>
+                        <p class="form-control-plaintext">
+                            {{ email.lawyer.name }}
+                            {% if email.lawyer.email %}
+                            &lt;{{ email.lawyer.email }}&gt;
+                            {% else %}
+                            <span class="text-danger">(no email address)</span>
+                            {% endif %}
+                        </p>
+                    </div>
+                    <div class="mb-3">
+                        <label for="subject" class="form-label fw-bold">Subject</label>
+                        <input type="text" class="form-control" id="subject" name="subject" value="{{ email.subject }}"
+                            {{ 'readonly' if email.status != 'draft' }}>
+                    </div>
+                    <div class="mb-3">
+                        <label for="body" class="form-label fw-bold">Body</label>
+                        <textarea class="form-control" id="body" name="body" rows="12"
+                            {{ 'readonly' if email.status != 'draft' }}>{{ email.body }}</textarea>
+                    </div>
+                    {% if email.status == 'draft' %}
+                    <div class="d-flex gap-2">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-save"></i> Save Changes
+                        </button>
+                        {% if email.lawyer.email %}
+                        <form method="POST" action="{{ url_for('outreach.send', email_id=email.id) }}" class="d-inline">
+                            <button type="submit" class="btn btn-success" onclick="return confirm('Send this email to {{ email.lawyer.email }}?')">
+                                <i class="bi bi-send"></i> Send Now
+                            </button>
+                        </form>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Sidebar Info -->
+    <div class="col-lg-4">
+        <div class="card shadow-sm mb-3">
+            <div class="card-header bg-white">
+                <h6 class="mb-0">Email Details</h6>
+            </div>
+            <div class="card-body">
+                <p><strong>Type:</strong> {{ email.email_type }}</p>
+                <p><strong>Created:</strong> {{ email.created_at.strftime('%b %d, %Y %H:%M') }}</p>
+                {% if email.sent_at %}
+                <p><strong>Sent:</strong> {{ email.sent_at.strftime('%b %d, %Y %H:%M') }}</p>
+                {% endif %}
+                {% if email.followup_date %}
+                <p><strong>Follow-up Date:</strong> {{ email.followup_date.strftime('%b %d, %Y') }}</p>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="card shadow-sm">
+            <div class="card-header bg-white">
+                <h6 class="mb-0">Related Case</h6>
+            </div>
+            <div class="card-body">
+                <a href="{{ url_for('cases.case_detail', case_id=email.case.id) }}">
+                    {{ email.case.title[:80] }}
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
