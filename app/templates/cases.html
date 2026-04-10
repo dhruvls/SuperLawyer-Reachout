@@ -2,33 +2,33 @@
 {% block title %}Cases - Super Lawyer Reachout{% endblock %}
 {% block content %}
 <div class="d-flex justify-content-between align-items-center mb-4">
-    <h2>Legal Cases</h2>
+    <h2 class="fw-bold">Legal Cases</h2>
     <div class="d-flex gap-2">
-        <form method="POST" action="{{ url_for('cases.trigger_scan') }}">
-            <button type="submit" class="btn btn-primary">
-                <i class="bi bi-search"></i> Scan for New Cases
-            </button>
+        <a href="{{ url_for('cases.export_cases_csv') }}" class="btn btn-outline-secondary btn-sm">
+            <i class="bi bi-download"></i> Export CSV
+        </a>
+        <form method="POST" action="{{ url_for('cases.trigger_scan') }}" class="scan-form">
+            <button type="submit" class="btn btn-primary"><i class="bi bi-search"></i> Scan for New Cases</button>
         </form>
-        <form method="POST" action="{{ url_for('cases.clear_cases') }}" onsubmit="return confirm('This will delete ALL existing cases and rescan fresh. Continue?')">
-            <button type="submit" class="btn btn-outline-danger">
-                <i class="bi bi-arrow-repeat"></i> Clear &amp; Rescan
-            </button>
+        <form method="POST" action="{{ url_for('cases.clear_cases') }}" class="scan-form"
+              onsubmit="return confirm('Delete ALL cases and rescan fresh?')">
+            <button type="submit" class="btn btn-outline-danger"><i class="bi bi-arrow-repeat"></i> Clear & Rescan</button>
         </form>
     </div>
 </div>
 
 <!-- Search and Filter -->
-<div class="card shadow-sm mb-4">
-    <div class="card-body">
-        <form method="GET" class="row g-3">
+<div class="card border-0 shadow-sm mb-4">
+    <div class="card-body py-2">
+        <form method="GET" class="row g-2 align-items-center">
             <div class="col-md-6">
-                <div class="input-group">
+                <div class="input-group input-group-sm">
                     <span class="input-group-text"><i class="bi bi-search"></i></span>
                     <input type="text" class="form-control" name="q" placeholder="Search cases (AI-powered)..." value="{{ query }}">
                 </div>
             </div>
             <div class="col-md-3">
-                <select name="status" class="form-select">
+                <select name="status" class="form-select form-select-sm">
                     <option value="all" {{ 'selected' if status == 'all' }}>All Status</option>
                     <option value="active" {{ 'selected' if status == 'active' }}>Active</option>
                     <option value="monitoring" {{ 'selected' if status == 'monitoring' }}>Monitoring</option>
@@ -36,45 +36,51 @@
                 </select>
             </div>
             <div class="col-md-3">
-                <button type="submit" class="btn btn-outline-primary w-100">Filter</button>
+                <button type="submit" class="btn btn-sm btn-primary w-100">Filter</button>
             </div>
         </form>
     </div>
 </div>
 
-<!-- Cases List -->
 {% if cases %}
 <div class="row g-3">
     {% for case in cases %}
     <div class="col-lg-6">
-        <div class="card shadow-sm h-100 case-card">
+        <div class="card border-0 shadow-sm h-100 case-card">
             <div class="card-body">
-                <div class="d-flex justify-content-between mb-2">
-                    <span class="badge bg-{{ 'success' if case.status == 'active' else 'info' if case.status == 'monitoring' else 'secondary' }}">
-                        {{ case.status }}
-                    </span>
-                    <span class="badge bg-dark">
-                        <i class="bi bi-graph-up"></i> {{ "%.1f"|format(case.trending_score) }}
-                    </span>
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <div class="d-flex gap-1 flex-wrap">
+                        <span class="badge bg-{{ 'success' if case.status == 'active' else 'info' if case.status == 'monitoring' else 'secondary' }}">
+                            {{ case.status }}
+                        </span>
+                        {% set pa = case.ai_analysis|practice_area %}
+                        {% if pa %}
+                        <span class="badge bg-{{ pa|pa_color }}">{{ pa }}</span>
+                        {% endif %}
+                    </div>
+                    <div class="d-flex align-items-center gap-2">
+                        <form method="POST" action="{{ url_for('cases.toggle_bookmark', case_id=case.id) }}" class="bookmark-form">
+                            <button type="submit" class="btn btn-link p-0 text-{{ 'warning' if case.id in bookmarked_ids else 'muted' }}">
+                                <i class="bi bi-star{{ '-fill' if case.id in bookmarked_ids else '' }}"></i>
+                            </button>
+                        </form>
+                        <span class="badge bg-dark"><i class="bi bi-graph-up"></i> {{ "%.1f"|format(case.trending_score) }}</span>
+                    </div>
                 </div>
-                <h5 class="card-title">
-                    <a href="{{ url_for('cases.case_detail', case_id=case.id) }}" class="text-decoration-none">
+                <h6 class="card-title mb-2">
+                    <a href="{{ url_for('cases.case_detail', case_id=case.id) }}" class="text-decoration-none text-dark">
                         {{ case.title[:100] }}{% if case.title|length > 100 %}...{% endif %}
                     </a>
-                </h5>
-                <p class="card-text text-muted small">
-                    {{ case.summary[:200] if case.summary else 'No summary available' }}{% if case.summary and case.summary|length > 200 %}...{% endif %}
+                </h6>
+                <p class="card-text text-muted small mb-2">
+                    {{ case.summary[:180] if case.summary else 'No summary' }}{% if case.summary and case.summary|length > 180 %}...{% endif %}
                 </p>
                 <div class="d-flex justify-content-between align-items-center">
                     <small class="text-muted">
                         <i class="bi bi-newspaper"></i> {{ case.source_name or 'Unknown' }}
-                        {% if case.published_date %}
-                        &middot; {{ case.published_date.strftime('%b %d') }}
-                        {% endif %}
+                        {% if case.published_date %}&middot; {{ case.published_date.strftime('%b %d') }}{% endif %}
                     </small>
-                    <small class="text-muted">
-                        <i class="bi bi-people"></i> {{ case.lawyers|length }} lawyers
-                    </small>
+                    <small class="text-muted"><i class="bi bi-people"></i> {{ case.lawyers|length }} lawyers</small>
                 </div>
             </div>
         </div>
@@ -86,23 +92,17 @@
 <nav class="mt-4">
     <ul class="pagination justify-content-center">
         {% if pagination.has_prev %}
-        <li class="page-item">
-            <a class="page-link" href="?page={{ pagination.prev_num }}&status={{ status }}&q={{ query }}">Previous</a>
-        </li>
+        <li class="page-item"><a class="page-link" href="?page={{ pagination.prev_num }}&status={{ status }}&q={{ query }}">Previous</a></li>
         {% endif %}
         {% for p in pagination.iter_pages() %}
         {% if p %}
-        <li class="page-item {{ 'active' if p == pagination.page }}">
-            <a class="page-link" href="?page={{ p }}&status={{ status }}&q={{ query }}">{{ p }}</a>
-        </li>
+        <li class="page-item {{ 'active' if p == pagination.page }}"><a class="page-link" href="?page={{ p }}&status={{ status }}&q={{ query }}">{{ p }}</a></li>
         {% else %}
         <li class="page-item disabled"><span class="page-link">...</span></li>
         {% endif %}
         {% endfor %}
         {% if pagination.has_next %}
-        <li class="page-item">
-            <a class="page-link" href="?page={{ pagination.next_num }}&status={{ status }}&q={{ query }}">Next</a>
-        </li>
+        <li class="page-item"><a class="page-link" href="?page={{ pagination.next_num }}&status={{ status }}&q={{ query }}">Next</a></li>
         {% endif %}
     </ul>
 </nav>

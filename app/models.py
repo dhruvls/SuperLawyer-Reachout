@@ -9,6 +9,13 @@ def load_user(user_id):
     return db.session.get(User, int(user_id))
 
 
+case_bookmarks = db.Table('case_bookmarks',
+    db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+    db.Column('case_id', db.Integer, db.ForeignKey('legal_case.id'), primary_key=True),
+    db.Column('created_at', db.DateTime, default=lambda: datetime.now(timezone.utc))
+)
+
+
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(120), unique=True, nullable=False)
@@ -16,6 +23,8 @@ class User(UserMixin, db.Model):
     name = db.Column(db.String(100), nullable=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     emails_sent = db.relationship('OutreachEmail', backref='sender', lazy=True)
+    bookmarked_cases = db.relationship('LegalCase', secondary=case_bookmarks, backref='bookmarked_by', lazy='dynamic')
+    notes = db.relationship('CaseNote', backref='author', lazy=True)
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
@@ -42,6 +51,19 @@ class LegalCase(db.Model):
     )
     lawyers = db.relationship('Lawyer', backref='case', lazy=True, cascade='all, delete-orphan')
     outreach_emails = db.relationship('OutreachEmail', backref='case', lazy=True)
+    case_notes = db.relationship('CaseNote', backref='case', lazy=True, cascade='all, delete-orphan',
+                                 order_by='CaseNote.created_at.desc()')
+
+    @property
+    def practice_area(self):
+        if self.ai_analysis:
+            try:
+                import json
+                data = json.loads(self.ai_analysis)
+                return data.get('practice_area', '')
+            except Exception:
+                pass
+        return ''
 
 
 class Lawyer(db.Model):
@@ -68,4 +90,12 @@ class OutreachEmail(db.Model):
     email_type = db.Column(db.String(20), default='primary')
     sent_at = db.Column(db.DateTime)
     followup_date = db.Column(db.DateTime)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class CaseNote(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    case_id = db.Column(db.Integer, db.ForeignKey('legal_case.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    content = db.Column(db.Text, nullable=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))

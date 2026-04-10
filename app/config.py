@@ -20,6 +20,9 @@ class Config:
     SMTP_PASSWORD = os.getenv('SMTP_PASSWORD')
     SENDER_NAME = os.getenv('SENDER_NAME', 'Super Lawyer Reachout')
 
+    # Scheduler
+    DAILY_SCAN_HOUR = int(os.getenv('DAILY_SCAN_HOUR', 6))
+
     # Optional
     NEWS_API_KEY = os.getenv('NEWS_API_KEY')
     HUNTER_API_KEY = os.getenv('HUNTER_API_KEY')

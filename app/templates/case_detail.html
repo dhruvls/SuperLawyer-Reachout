@@ -9,23 +9,33 @@
 </nav>
 
 <div class="row g-4">
-    <!-- Case Info -->
     <div class="col-lg-8">
-        <div class="card shadow-sm">
+        <div class="card border-0 shadow-sm">
             <div class="card-body">
                 <div class="d-flex justify-content-between align-items-start mb-3">
-                    <h4>{{ case.title }}</h4>
-                    <span class="badge bg-{{ 'success' if case.status == 'active' else 'info' if case.status == 'monitoring' else 'secondary' }} ms-2">
-                        {{ case.status }}
-                    </span>
+                    <div class="flex-grow-1 me-3">
+                        <h4 class="fw-bold mb-2">{{ case.title }}</h4>
+                        <div class="d-flex gap-2 flex-wrap">
+                            <span class="badge bg-{{ 'success' if case.status == 'active' else 'info' if case.status == 'monitoring' else 'secondary' }}">
+                                {{ case.status }}
+                            </span>
+                            {% set pa = case.practice_area %}
+                            {% if pa %}<span class="badge bg-{{ pa|pa_color }}">{{ pa }}</span>{% endif %}
+                            {% if analysis.court %}<span class="badge bg-outline-dark">{{ analysis.court }}</span>{% endif %}
+                        </div>
+                    </div>
+                    <form method="POST" action="{{ url_for('cases.toggle_bookmark', case_id=case.id) }}" class="bookmark-form">
+                        <button type="submit" class="btn btn-{{ 'warning' if is_bookmarked else 'outline-warning' }} btn-sm">
+                            <i class="bi bi-star{{ '-fill' if is_bookmarked else '' }}"></i>
+                            {{ 'Bookmarked' if is_bookmarked else 'Bookmark' }}
+                        </button>
+                    </form>
                 </div>
 
                 <div class="mb-3">
                     <small class="text-muted">
                         <i class="bi bi-newspaper"></i> {{ case.source_name or 'Unknown' }}
-                        {% if case.published_date %}
-                        &middot; {{ case.published_date.strftime('%B %d, %Y') }}
-                        {% endif %}
+                        {% if case.published_date %}&middot; {{ case.published_date.strftime('%B %d, %Y') }}{% endif %}
                         &middot; Trending Score: <strong>{{ "%.1f"|format(case.trending_score) }}/10</strong>
                     </small>
                 </div>
@@ -36,23 +46,24 @@
                 </a>
                 {% endif %}
 
-                <h6>Summary</h6>
+                <h6 class="fw-semibold">Summary</h6>
                 <p>{{ case.summary or 'No summary available.' }}</p>
 
                 {% if analysis %}
                 <hr>
-                {% if analysis.practice_area %}
-                <p><strong>Practice Area:</strong> {{ analysis.practice_area }}</p>
-                {% endif %}
+                <div class="row g-3">
+                    {% if analysis.practice_area %}
+                    <div class="col-sm-6"><strong>Practice Area:</strong> {{ analysis.practice_area }}</div>
+                    {% endif %}
+                    {% if analysis.court %}
+                    <div class="col-sm-6"><strong>Court:</strong> {{ analysis.court }}</div>
+                    {% endif %}
+                </div>
                 {% if analysis.trending_reason %}
-                <p><strong>Why Trending:</strong> {{ analysis.trending_reason }}</p>
-                {% endif %}
-                {% if analysis.status %}
-                <p><strong>Case Status:</strong> {{ analysis.status }}</p>
+                <p class="mt-2"><strong>Why Trending:</strong> {{ analysis.trending_reason }}</p>
                 {% endif %}
                 {% endif %}
 
-                <!-- Status Update -->
                 <hr>
                 <form method="POST" action="{{ url_for('cases.update_case_status', case_id=case.id) }}" class="d-inline-flex gap-2">
                     <select name="status" class="form-select form-select-sm" style="width: auto;">
@@ -65,26 +76,54 @@
             </div>
         </div>
 
-        <!-- Outreach Emails for this Case -->
-        {% if emails %}
-        <div class="card shadow-sm mt-4">
+        <!-- Notes -->
+        <div class="card border-0 shadow-sm mt-4">
             <div class="card-header bg-white">
-                <h5 class="mb-0">Outreach Emails</h5>
+                <h5 class="mb-0"><i class="bi bi-journal-text"></i> Notes</h5>
             </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('cases.add_note', case_id=case.id) }}" class="mb-3">
+                    <div class="input-group">
+                        <textarea name="content" class="form-control" rows="2" placeholder="Add a note..." required></textarea>
+                        <button type="submit" class="btn btn-primary"><i class="bi bi-plus-lg"></i></button>
+                    </div>
+                </form>
+                {% for note in case.case_notes %}
+                <div class="note-item mb-2 p-3 bg-light rounded">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <p class="mb-1">{{ note.content }}</p>
+                            <small class="text-muted">{{ note.author.name }} &middot; {{ note.created_at.strftime('%b %d, %Y %H:%M') }}</small>
+                        </div>
+                        {% if note.user_id == current_user.id %}
+                        <form method="POST" action="{{ url_for('cases.delete_note', note_id=note.id) }}">
+                            <button type="submit" class="btn btn-sm btn-link text-danger p-0"><i class="bi bi-trash"></i></button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </div>
+                {% else %}
+                <p class="text-muted small mb-0">No notes yet.</p>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Outreach Emails -->
+        {% if emails %}
+        <div class="card border-0 shadow-sm mt-4">
+            <div class="card-header bg-white"><h5 class="mb-0">Outreach Emails</h5></div>
             <div class="list-group list-group-flush">
                 {% for email in emails %}
-                <div class="list-group-item">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <div>
-                            <h6 class="mb-0">{{ email.lawyer.name }}</h6>
-                            <small class="text-muted">{{ email.subject }}</small>
-                        </div>
-                        <div>
-                            <span class="badge bg-{{ 'success' if email.status == 'sent' else 'warning' if email.status == 'pending_followup' else 'danger' if email.status == 'failed' else 'secondary' }}">
-                                {{ email.status.replace('_', ' ') }}
-                            </span>
-                            <a href="{{ url_for('outreach.edit_email', email_id=email.id) }}" class="btn btn-sm btn-outline-primary ms-2">View</a>
-                        </div>
+                <div class="list-group-item d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="mb-0">{{ email.lawyer.name }}</h6>
+                        <small class="text-muted">{{ email.subject }}</small>
+                    </div>
+                    <div>
+                        <span class="badge bg-{{ 'success' if email.status == 'sent' else 'warning' if email.status == 'pending_followup' else 'secondary' }}">
+                            {{ email.status.replace('_', ' ') }}
+                        </span>
+                        <a href="{{ url_for('outreach.edit_email', email_id=email.id) }}" class="btn btn-sm btn-outline-primary ms-2">View</a>
                     </div>
                 </div>
                 {% endfor %}
@@ -95,25 +134,20 @@
 
     <!-- Lawyers Sidebar -->
     <div class="col-lg-4">
-        <div class="card shadow-sm">
+        <div class="card border-0 shadow-sm">
             <div class="card-header bg-white">
                 <h5 class="mb-0"><i class="bi bi-people"></i> Lawyers ({{ case.lawyers|length }})</h5>
             </div>
             <div class="card-body">
-                {% if case.lawyers %}
                 {% for lawyer in case.lawyers %}
-                <div class="lawyer-card mb-3 p-3 bg-light rounded">
+                <div class="lawyer-card mb-3 p-3 rounded">
                     <h6 class="mb-1">{{ lawyer.name }}</h6>
-                    {% if lawyer.role %}
-                    <small class="text-muted d-block">{{ lawyer.role }}</small>
-                    {% endif %}
-                    {% if lawyer.firm %}
-                    <small class="text-muted d-block"><i class="bi bi-building"></i> {{ lawyer.firm }}</small>
-                    {% endif %}
+                    {% if lawyer.role %}<small class="text-muted d-block">{{ lawyer.role }}</small>{% endif %}
+                    {% if lawyer.firm %}<small class="text-muted d-block"><i class="bi bi-building"></i> {{ lawyer.firm }}</small>{% endif %}
 
                     {% if lawyer.linkedin_url %}
                     <a href="{{ lawyer.linkedin_url }}" target="_blank" class="text-decoration-none d-block mt-1">
-                        <small class="text-primary"><i class="bi bi-linkedin"></i> LinkedIn Profile</small>
+                        <small class="text-primary"><i class="bi bi-linkedin"></i> LinkedIn</small>
                     </a>
                     {% endif %}
 
@@ -121,43 +155,32 @@
                     <small class="text-success d-block mt-1">
                         <i class="bi bi-envelope-check"></i> {{ lawyer.email }}
                         {% if lawyer.email_source %}
-                        <a href="{{ lawyer.email_source }}" target="_blank" class="text-muted ms-1" title="Email source">
-                            <i class="bi bi-box-arrow-up-right"></i> source
-                        </a>
+                        <a href="{{ lawyer.email_source }}" target="_blank" class="text-muted ms-1" title="Source"><i class="bi bi-box-arrow-up-right"></i></a>
                         {% endif %}
                     </small>
                     {% else %}
-                    <!-- Add Email Form -->
                     <form method="POST" action="{{ url_for('cases.update_lawyer_email', lawyer_id=lawyer.id) }}" class="mt-2">
                         <div class="input-group input-group-sm">
                             <input type="email" name="email" class="form-control" placeholder="Add email...">
-                            <button type="submit" class="btn btn-outline-primary btn-sm">
-                                <i class="bi bi-plus"></i>
-                            </button>
+                            <button type="submit" class="btn btn-outline-primary btn-sm"><i class="bi bi-plus"></i></button>
                         </div>
                     </form>
                     {% endif %}
 
-                    <!-- Generate Email Button -->
                     <div class="mt-2 d-flex gap-1">
                         <form method="POST" action="{{ url_for('outreach.generate', lawyer_id=lawyer.id) }}">
                             <input type="hidden" name="email_type" value="primary">
-                            <button type="submit" class="btn btn-sm btn-primary">
-                                <i class="bi bi-pencil"></i> Draft Email
-                            </button>
+                            <button type="submit" class="btn btn-sm btn-primary"><i class="bi bi-pencil"></i> Draft</button>
                         </form>
                         <form method="POST" action="{{ url_for('outreach.generate', lawyer_id=lawyer.id) }}">
                             <input type="hidden" name="email_type" value="followup">
-                            <button type="submit" class="btn btn-sm btn-outline-secondary">
-                                <i class="bi bi-reply"></i> Follow-up
-                            </button>
+                            <button type="submit" class="btn btn-sm btn-outline-secondary"><i class="bi bi-reply"></i> Follow-up</button>
                         </form>
                     </div>
                 </div>
-                {% endfor %}
                 {% else %}
-                <p class="text-muted text-center">No lawyers identified for this case.</p>
-                {% endif %}
+                <p class="text-muted text-center">No lawyers identified.</p>
+                {% endfor %}
             </div>
         </div>
     </div>

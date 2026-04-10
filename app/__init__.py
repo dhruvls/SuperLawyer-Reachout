@@ -1,3 +1,4 @@
+import json
 import click
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
@@ -7,12 +8,30 @@ from app.config import Config
 db = SQLAlchemy()
 login_manager = LoginManager()
 
+PRACTICE_AREA_COLORS = {
+    'constitutional': 'danger',
+    'corporate': 'primary',
+    'criminal': 'dark',
+    'tax': 'warning',
+    'ip': 'info',
+    'environmental': 'success',
+    'cyber': 'purple',
+    'insolvency': 'secondary',
+    'antitrust': 'purple',
+    'securities': 'primary',
+    'banking': 'warning',
+    'labour': 'orange',
+    'employment': 'orange',
+    'family': 'pink',
+    'real estate': 'success',
+    'media': 'info',
+}
+
 
 def create_app():
     app = Flask(__name__)
     app.config.from_object(Config)
 
-    # Render gives postgres:// but SQLAlchemy needs postgresql://
     uri = app.config.get('SQLALCHEMY_DATABASE_URI', '')
     if uri and uri.startswith('postgres://'):
         app.config['SQLALCHEMY_DATABASE_URI'] = uri.replace('postgres://', 'postgresql://', 1)
@@ -21,6 +40,27 @@ def create_app():
     login_manager.init_app(app)
     login_manager.login_view = 'auth.login'
     login_manager.login_message_category = 'info'
+
+    # Register Jinja filters
+    @app.template_filter('practice_area')
+    def practice_area_filter(ai_analysis_json):
+        if not ai_analysis_json:
+            return ''
+        try:
+            data = json.loads(ai_analysis_json)
+            return data.get('practice_area', '')
+        except Exception:
+            return ''
+
+    @app.template_filter('pa_color')
+    def practice_area_color_filter(practice_area):
+        if not practice_area:
+            return 'secondary'
+        pa = practice_area.lower().strip()
+        for key, color in PRACTICE_AREA_COLORS.items():
+            if key in pa:
+                return color
+        return 'secondary'
 
     from app.auth.routes import auth_bp
     from app.cases.routes import cases_bp
@@ -36,12 +76,15 @@ def create_app():
         _migrate_columns(app)
         _seed_admin(app)
 
+    # Auto-scan scheduler
+    _setup_scheduler(app)
+
     @app.cli.command('create-user')
     @click.argument('email')
     @click.argument('name')
     @click.option('--password', prompt=True, hide_input=True, confirmation_prompt=True)
     def create_user(email, name, password):
-        """Create a new user. Usage: flask create-user EMAIL NAME"""
+        """Create a new user."""
         from app.models import User
         if User.query.filter_by(email=email.lower()).first():
             click.echo(f'Error: {email} already exists.')
@@ -55,6 +98,41 @@ def create_app():
     return app
 
 
+def _setup_scheduler(app):
+    """Set up daily auto-scan using APScheduler."""
+    import os
+    if os.getenv('WERKZEUG_RUN_MAIN') == 'true' or not app.debug:
+        try:
+            from apscheduler.schedulers.background import BackgroundScheduler
+            hour = app.config.get('DAILY_SCAN_HOUR', 6)
+            scheduler = BackgroundScheduler()
+            scheduler.add_job(
+                func=lambda: _run_daily_scan(app),
+                trigger='cron',
+                hour=hour,
+                id='daily_scan',
+                replace_existing=True,
+            )
+            scheduler.start()
+            import atexit
+            atexit.register(lambda: scheduler.shutdown(wait=False))
+            app.logger.info(f'Daily scan scheduled at {hour}:00 UTC')
+        except Exception as e:
+            app.logger.error(f'Scheduler setup failed: {e}')
+
+
+def _run_daily_scan(app):
+    """Run scan in app context."""
+    with app.app_context():
+        from app.cases.tracker import scan_for_cases
+        app.logger.info("Starting daily scheduled scan...")
+        try:
+            new_cases = scan_for_cases()
+            app.logger.info(f"Daily scan complete: {len(new_cases)} new cases")
+        except Exception as e:
+            app.logger.error(f"Daily scan failed: {e}")
+
+
 def _migrate_columns(app):
     """Add columns that db.create_all() can't add to existing tables."""
     from sqlalchemy import text, inspect as sa_inspect
@@ -64,7 +142,7 @@ def _migrate_columns(app):
             if 'email_source' not in columns:
                 conn.execute(text("ALTER TABLE lawyer ADD COLUMN email_source VARCHAR(500)"))
                 conn.commit()
-                app.logger.info('Added email_source column to lawyer table.')
+                app.logger.info('Added email_source column.')
     except Exception:
         pass
 
@@ -80,7 +158,6 @@ def _seed_admin(app):
 
     if not email or not password:
         return
-
     if User.query.filter_by(email=email.lower()).first():
         return
 
