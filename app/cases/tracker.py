@@ -501,58 +501,58 @@ def scan_for_cases():
             current_app.logger.warning(f"[VERIFY] Multi-source: {title[:50]}")
             verified_lawyers = _gather_lawyers_multi_source(title, analysis)
 
-                # Build case
-                case = LegalCase(
-                    title=title,
-                    summary=analysis.get('summary', article_text[:300]) if analysis else article_text[:300],
-                    source_url=source_url,
-                    source_name=article['source'],
-                    published_date=article['published'],
-                    status='active',
+            # Build case
+            case = LegalCase(
+                title=title,
+                summary=analysis.get('summary', article_text[:300]) if analysis else article_text[:300],
+                source_url=source_url,
+                source_name=article['source'],
+                published_date=article['published'],
+                status='active',
+            )
+
+            if analysis:
+                case.ai_analysis = json.dumps(analysis)
+                case.trending_score = _compute_trending_score(analysis)
+            else:
+                case.trending_score = 5.0
+
+            # Step 4: Create lawyers with verification data
+            for vl in verified_lawyers:
+                name = vl.get('name', '')
+                firm = vl.get('firm', '')
+                lawyer = Lawyer(
+                    name=name, firm=firm, role=vl.get('role', ''),
+                    verified=vl.get('verified', False),
+                    confidence_score=vl.get('confidence', 0.3),
+                    verification_sources=json.dumps(vl.get('sources', [])),
                 )
 
-                if analysis:
-                    case.ai_analysis = json.dumps(analysis)
-                    case.trending_score = _compute_trending_score(analysis)
-                else:
-                    case.trending_score = 5.0
-
-                # Step 4: Create lawyers with verification data
-                for vl in verified_lawyers:
-                    name = vl.get('name', '')
-                    firm = vl.get('firm', '')
-                    lawyer = Lawyer(
-                        name=name, firm=firm, role=vl.get('role', ''),
-                        verified=vl.get('verified', False),
-                        confidence_score=vl.get('confidence', 0.3),
-                        verification_sources=json.dumps(vl.get('sources', [])),
-                    )
-
-                    current_app.logger.warning(
-                        f"[CONTACT] {name} (conf: {vl['confidence']:.1f})"
-                    )
-                    email, linkedin, source = find_lawyer_email(name, firm)
-                    if email:
-                        lawyer.email = email
-                        lawyer.email_source = source
-                    if linkedin:
-                        lawyer.linkedin_url = linkedin
-
-                    case.lawyers.append(lawyer)
-
-                db.session.add(case)
-                db.session.commit()
-                new_cases.append(case)
-                total += 1
                 current_app.logger.warning(
-                    f"[SAVED] #{total}: {title[:50]} "
-                    f"(src: {article['source']}, {len(case.lawyers)} lawyers)"
+                    f"[CONTACT] {name} (conf: {vl['confidence']:.1f})"
                 )
+                email, linkedin, source = find_lawyer_email(name, firm)
+                if email:
+                    lawyer.email = email
+                    lawyer.email_source = source
+                if linkedin:
+                    lawyer.linkedin_url = linkedin
 
-            except Exception as e:
-                current_app.logger.error(f"[ERROR] Processing '{title[:40]}': {e}")
-                db.session.rollback()
-                continue
+                case.lawyers.append(lawyer)
+
+            db.session.add(case)
+            db.session.commit()
+            new_cases.append(case)
+            total += 1
+            current_app.logger.warning(
+                f"[SAVED] #{total}: {title[:50]} "
+                f"(src: {article['source']}, {len(case.lawyers)} lawyers)"
+            )
+
+        except Exception as e:
+            current_app.logger.error(f"[ERROR] Processing '{title[:40]}': {e}")
+            db.session.rollback()
+            continue
 
     current_app.logger.warning(f"=== SCAN DONE: {len(new_cases)} new cases ===")
     return new_cases
