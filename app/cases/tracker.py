@@ -19,12 +19,12 @@ LEGAL_RSS_FEEDS = [
 
 # ── Secondary: Site-specific Bing queries for LiveLaw & Bar and Bench ──
 SITE_QUERIES = [
-    'site:livelaw.in Supreme Court case lawyer',
-    'site:livelaw.in High Court ruling advocate',
-    'site:livelaw.in NCLT SEBI case',
-    'site:barandbench.com Supreme Court case lawyer',
-    'site:barandbench.com High Court ruling advocate',
-    'site:barandbench.com corporate NCLT case',
+    ('LiveLaw', 'site:livelaw.in Supreme Court case lawyer'),
+    ('LiveLaw', 'site:livelaw.in High Court ruling advocate'),
+    ('LiveLaw', 'site:livelaw.in NCLT SEBI case'),
+    ('Bar and Bench', 'site:barandbench.com Supreme Court case lawyer'),
+    ('Bar and Bench', 'site:barandbench.com High Court ruling advocate'),
+    ('Bar and Bench', 'site:barandbench.com corporate NCLT case'),
 ]
 
 # ── Tertiary: Generic Bing queries (fallback if above yield too few) ──
@@ -64,7 +64,7 @@ NAME_BLOCKLIST = {
 }
 
 
-def fetch_news(query, days=15):
+def fetch_news(query, days=15, source_name=None):
     """Fetch legal news from Bing News RSS."""
     encoded = quote_plus(query)
     url = f"https://www.bing.com/news/search?q={encoded}&format=rss&count=10&mkt=en-IN"
@@ -82,10 +82,22 @@ def fetch_news(query, days=15):
                 published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
                 if published < cutoff:
                     continue
+
+            # Detect source from URL if not explicitly provided
+            entry_url = entry.get('link', '')
+            if source_name:
+                src = source_name
+            elif 'livelaw.in' in entry_url:
+                src = 'LiveLaw'
+            elif 'barandbench.com' in entry_url:
+                src = 'Bar and Bench'
+            else:
+                src = entry.get('source', {}).get('title', 'News')
+
             articles.append({
                 'title': entry.get('title', ''),
-                'url': entry.get('link', ''),
-                'source': entry.get('source', {}).get('title', 'News'),
+                'url': entry_url,
+                'source': src,
                 'published': published,
             })
         return articles
@@ -454,8 +466,8 @@ def _collect_all_articles():
     # Tier 2: Site-specific Bing queries (LiveLaw + Bar and Bench)
     if len(all_articles) < MAX_NEW_CASES * 2:
         current_app.logger.warning("--- Tier 2: Site-specific Bing ---")
-        for query in SITE_QUERIES:
-            _add_unique(fetch_news(query, days=15))
+        for src_name, query in SITE_QUERIES:
+            _add_unique(fetch_news(query, days=15, source_name=src_name))
         current_app.logger.warning(f"[TIER 2] {len(all_articles)} total articles")
 
     # Tier 3: Generic Bing queries (fallback)

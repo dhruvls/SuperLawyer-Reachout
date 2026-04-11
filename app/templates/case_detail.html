@@ -32,12 +32,24 @@
                     </form>
                 </div>
 
-                <div class="mb-3">
-                    <small class="text-muted">
-                        <i class="bi bi-newspaper"></i> {{ case.source_name or 'Unknown' }}
-                        {% if case.published_date %}&middot; {{ case.published_date.strftime('%B %d, %Y') }}{% endif %}
-                        &middot; Trending Score: <strong>{{ "%.1f"|format(case.trending_score) }}/10</strong>
-                    </small>
+                <div class="mb-3 d-flex align-items-center gap-2 flex-wrap">
+                    {% if case.source_name == 'LiveLaw' %}
+                    <span class="badge" style="background-color: #e8352d;">
+                        <i class="bi bi-newspaper"></i> LiveLaw
+                    </span>
+                    {% elif case.source_name == 'Bar and Bench' %}
+                    <span class="badge" style="background-color: #1a3c6e;">
+                        <i class="bi bi-newspaper"></i> Bar and Bench
+                    </span>
+                    {% else %}
+                    <span class="badge bg-secondary">
+                        <i class="bi bi-newspaper"></i> {{ case.source_name or 'Other' }}
+                    </span>
+                    {% endif %}
+                    {% if case.published_date %}
+                    <small class="text-muted">{{ case.published_date.strftime('%B %d, %Y') }}</small>
+                    {% endif %}
+                    <small class="text-muted">&middot; Trending Score: <strong>{{ "%.1f"|format(case.trending_score) }}/10</strong></small>
                 </div>
 
                 {% if case.source_url %}

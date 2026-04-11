@@ -76,10 +76,24 @@
                     {{ case.summary[:180] if case.summary else 'No summary' }}{% if case.summary and case.summary|length > 180 %}...{% endif %}
                 </p>
                 <div class="d-flex justify-content-between align-items-center">
-                    <small class="text-muted">
-                        <i class="bi bi-newspaper"></i> {{ case.source_name or 'Unknown' }}
-                        {% if case.published_date %}&middot; {{ case.published_date.strftime('%b %d') }}{% endif %}
-                    </small>
+                    <div class="d-flex align-items-center gap-2">
+                        {% if case.source_name == 'LiveLaw' %}
+                        <span class="badge" style="background-color: #e8352d; font-size: .7rem;">
+                            <i class="bi bi-newspaper"></i> LiveLaw
+                        </span>
+                        {% elif case.source_name == 'Bar and Bench' %}
+                        <span class="badge" style="background-color: #1a3c6e; font-size: .7rem;">
+                            <i class="bi bi-newspaper"></i> Bar and Bench
+                        </span>
+                        {% else %}
+                        <span class="badge bg-secondary" style="font-size: .7rem;">
+                            <i class="bi bi-newspaper"></i> {{ case.source_name or 'Other' }}
+                        </span>
+                        {% endif %}
+                        {% if case.published_date %}
+                        <small class="text-muted">{{ case.published_date.strftime('%b %d') }}</small>
+                        {% endif %}
+                    </div>
                     <small class="text-muted"><i class="bi bi-people"></i> {{ case.lawyers|length }} lawyers</small>
                 </div>
             </div>
