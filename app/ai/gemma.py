@@ -27,16 +27,24 @@ def analyze_case(title, article_text):
     if not model:
         return None
 
-    prompt = f"""You are an expert in Indian law. Analyze this legal case news article.
+    prompt = f"""You are an expert in Indian law. Analyze this article and determine if it reports on an ACTUAL COURT CASE (a specific legal proceeding with parties, a court, and lawyers).
 
-CRITICAL: Extract the ACTUAL FULL NAMES of lawyers and advocates mentioned in the article.
+IMPORTANT DISTINCTION:
+- ACTUAL CASE: A court judgment, order, petition, hearing, bail matter, PIL, or tribunal proceeding involving specific parties and lawyers. These have case numbers, party names (X vs Y), specific courts, and named advocates.
+- NOT A CASE: General legal news, policy updates, law amendments, opinion pieces, appointments, legal industry news, legislative debates, law firm announcements, legal education news.
+
+Set "is_case" to true ONLY if this is an actual court proceeding.
+
+CRITICAL: Extract the ACTUAL FULL NAMES of lawyers and advocates mentioned.
 Look for: Senior Advocate, Advocate, Solicitor General, Additional Solicitor General,
 Advocate General, Standing Counsel, Amicus Curiae, and any named legal representatives.
 
 DO NOT return "Unknown" as a name. If no lawyer names are explicitly mentioned, return an EMPTY lawyers list.
 
 Return a JSON object with:
-- "summary": 2-3 sentence summary
+- "is_case": true if this is an actual court case/proceeding, false if it's just legal news
+- "summary": 2-3 sentence summary of the case
+- "case_name": The case name if identifiable (e.g. "State of Maharashtra v. XYZ") or ""
 - "lawyers": List of objects with:
   - "name": FULL NAME only (e.g. "Harish Salve", "Kapil Sibal") - NEVER "Unknown"
   - "firm": Law firm or organization

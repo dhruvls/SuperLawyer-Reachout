@@ -19,21 +19,22 @@ LEGAL_RSS_FEEDS = [
 
 # ── Secondary: Site-specific Bing queries for LiveLaw & Bar and Bench ──
 SITE_QUERIES = [
-    ('LiveLaw', 'site:livelaw.in Supreme Court case lawyer'),
-    ('LiveLaw', 'site:livelaw.in High Court ruling advocate'),
-    ('LiveLaw', 'site:livelaw.in NCLT SEBI case'),
-    ('Bar and Bench', 'site:barandbench.com Supreme Court case lawyer'),
-    ('Bar and Bench', 'site:barandbench.com High Court ruling advocate'),
-    ('Bar and Bench', 'site:barandbench.com corporate NCLT case'),
+    ('LiveLaw', 'site:livelaw.in Supreme Court judgment advocate'),
+    ('LiveLaw', 'site:livelaw.in High Court verdict senior advocate'),
+    ('LiveLaw', 'site:livelaw.in PIL petition hearing'),
+    ('LiveLaw', 'site:livelaw.in NCLT SEBI order advocate'),
+    ('Bar and Bench', 'site:barandbench.com Supreme Court judgment advocate'),
+    ('Bar and Bench', 'site:barandbench.com High Court verdict petition'),
+    ('Bar and Bench', 'site:barandbench.com NCLT insolvency order'),
 ]
 
 # ── Tertiary: Generic Bing queries (fallback if above yield too few) ──
 FALLBACK_QUERIES = [
-    'India Supreme Court landmark case',
-    'India High Court ruling lawyer',
-    'Indian corporate lawsuit NCLT',
-    'SEBI enforcement action India',
-    'India criminal trial high profile',
+    'India Supreme Court judgment advocate senior counsel 2025',
+    'India High Court verdict petition lawyer 2025',
+    'NCLT insolvency order advocate India',
+    'SEBI order penalty hearing India',
+    'India PIL Supreme Court senior advocate',
 ]
 
 HEADERS = {
@@ -130,16 +131,38 @@ def fetch_rss_direct(feed_url, source_name, days=15):
             if not title or not link:
                 continue
 
-            # Filter: only keep legal/court articles
+            # Filter: only keep actual court case articles, not general legal news
             title_lower = title.lower()
-            legal_keywords = [
-                'court', 'judge', 'justice', 'advocate', 'lawyer', 'bench',
-                'petition', 'verdict', 'ruling', 'bail', 'case', 'tribunal',
-                'nclt', 'sebi', 'cci', 'appeal', 'order', 'hearing',
-                'accused', 'conviction', 'acquittal', 'writ', 'plea',
-                'litigation', 'arbitration', 'dispute', 'act', 'section',
+
+            # Strong indicators — these almost always mean an actual case
+            case_keywords = [
+                'judgment', 'judgement', 'verdict', 'petition', 'PIL',
+                'bail', 'FIR', 'conviction', 'acquittal', 'writ',
+                'plea', 'quash', 'quashed', 'dismiss', 'dismissed',
+                'upheld', 'directed', 'restrain', 'injunction',
+                'v.', 'vs', 'v/s', 'versus',
+                'appellant', 'respondent', 'petitioner', 'accused',
+                'sentence', 'sentencing', 'chargesheet',
             ]
-            if not any(kw in title_lower for kw in legal_keywords):
+            # Court/tribunal names — strong context
+            court_keywords = [
+                'supreme court', 'high court', 'nclt', 'nclat',
+                'district court', 'sessions court', 'tribunal',
+                'sebi', 'cci', 'ngt', 'consumer court', 'itat',
+                'bench', 'division bench', 'single bench',
+            ]
+            # Weak — only count if paired with court context
+            weak_keywords = [
+                'advocate', 'senior advocate', 'counsel',
+                'hearing', 'order', 'appeal', 'case',
+            ]
+
+            has_strong = any(kw in title_lower for kw in case_keywords)
+            has_court = any(kw in title_lower for kw in court_keywords)
+            has_weak = any(kw in title_lower for kw in weak_keywords)
+
+            # Must have at least: strong keyword, OR court + weak keyword
+            if not has_strong and not (has_court and has_weak):
                 continue
 
             articles.append({
@@ -509,13 +532,30 @@ def scan_for_cases():
             current_app.logger.warning(f"[AI] Analyzing: {title[:50]}")
             analysis = analyze_case(title, article_text)
 
+            # Gate: Skip if AI says this is NOT an actual court case
+            if analysis and not analysis.get('is_case', True):
+                current_app.logger.warning(
+                    f"[SKIP] Not a case (news/opinion): {title[:50]}"
+                )
+                continue
+
+            # Gate: Skip if AI found zero lawyers (likely not a real case)
+            ai_lawyers = analysis.get('lawyers', []) if analysis else []
+            if not ai_lawyers:
+                current_app.logger.warning(
+                    f"[SKIP] No lawyers found by AI: {title[:50]}"
+                )
+                continue
+
             # Step 3: Multi-source lawyer verification
             current_app.logger.warning(f"[VERIFY] Multi-source: {title[:50]}")
             verified_lawyers = _gather_lawyers_multi_source(title, analysis)
 
-            # Build case
+            # Build case — use AI case_name if available for a cleaner title
+            case_name = analysis.get('case_name', '') if analysis else ''
+            display_title = case_name if case_name else title
             case = LegalCase(
-                title=title,
+                title=display_title,
                 summary=analysis.get('summary', article_text[:300]) if analysis else article_text[:300],
                 source_url=source_url,
                 source_name=article['source'],
