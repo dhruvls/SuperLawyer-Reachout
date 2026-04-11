@@ -63,12 +63,43 @@
 
     <!-- Sidebar Info -->
     <div class="col-lg-4">
+        <!-- Pipeline Stage -->
+        <div class="card shadow-sm mb-3">
+            <div class="card-header bg-white">
+                <h6 class="mb-0"><i class="bi bi-signpost-split"></i> Pipeline Stage</h6>
+            </div>
+            <div class="card-body p-0">
+                <div class="list-group list-group-flush">
+                    <div class="list-group-item d-flex align-items-center gap-2 {{ 'list-group-item-primary' if email.email_type == 'primary' and email.status == 'draft' }}">
+                        <i class="bi bi-{{ 'check-circle-fill text-success' if email.email_type == 'primary' and email.status != 'draft' else '1-circle-fill text-primary' if email.email_type == 'primary' and email.status == 'draft' else 'check-circle-fill text-success' }}"></i>
+                        <small>Draft primary email</small>
+                    </div>
+                    <div class="list-group-item d-flex align-items-center gap-2 {{ 'list-group-item-primary' if email.status == 'draft' and email.email_type == 'primary' }}">
+                        <i class="bi bi-{{ 'check-circle-fill text-success' if email.status in ('sent', 'pending_followup', 'followed_up') else '2-circle text-muted' }}"></i>
+                        <small>Send to lawyer</small>
+                    </div>
+                    <div class="list-group-item d-flex align-items-center gap-2 {{ 'list-group-item-warning' if email.status == 'pending_followup' }}">
+                        <i class="bi bi-{{ 'check-circle-fill text-success' if email.status == 'followed_up' else 'clock text-warning' if email.status == 'pending_followup' else '3-circle text-muted' }}"></i>
+                        <small>Follow-up{% if email.followup_date and email.status == 'pending_followup' %} — due {{ email.followup_date.strftime('%b %d') }}{% endif %}</small>
+                    </div>
+                    <div class="list-group-item d-flex align-items-center gap-2">
+                        <i class="bi bi-{{ 'check-circle-fill text-success' if email.status == 'followed_up' else '4-circle text-muted' }}"></i>
+                        <small>Complete</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <div class="card shadow-sm mb-3">
             <div class="card-header bg-white">
                 <h6 class="mb-0">Email Details</h6>
             </div>
             <div class="card-body">
-                <p><strong>Type:</strong> {{ email.email_type }}</p>
+                <p><strong>Type:</strong>
+                    <span class="badge bg-{{ 'info' if email.email_type == 'primary' else 'warning text-dark' }}">
+                        {{ email.email_type }}
+                    </span>
+                </p>
                 <p><strong>Created:</strong> {{ email.created_at.strftime('%b %d, %Y %H:%M') }}</p>
                 {% if email.sent_at %}
                 <p><strong>Sent:</strong> {{ email.sent_at.strftime('%b %d, %Y %H:%M') }}</p>

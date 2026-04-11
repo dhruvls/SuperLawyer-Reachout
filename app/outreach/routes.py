@@ -25,7 +25,20 @@ def outreach_list():
 def generate(lawyer_id):
     lawyer = db.get_or_404(Lawyer, lawyer_id)
     case = lawyer.case
-    email_type = request.form.get('email_type', 'primary')
+
+    # Auto-detect: only allow followup if primary was already sent
+    existing_primary = OutreachEmail.query.filter_by(
+        lawyer_id=lawyer.id, user_id=current_user.id, email_type='primary'
+    ).first()
+
+    requested_type = request.form.get('email_type', 'primary')
+
+    if requested_type == 'followup' and (
+        not existing_primary or existing_primary.status not in ('sent', 'pending_followup', 'followed_up')
+    ):
+        email_type = 'primary'
+    else:
+        email_type = requested_type
 
     result = generate_email(lawyer, case, email_type)
 
@@ -45,7 +58,7 @@ def generate(lawyer_id):
     db.session.add(outreach)
     db.session.commit()
 
-    flash('Email draft generated.', 'success')
+    flash(f'{"Follow-up" if email_type == "followup" else "Outreach"} email drafted.', 'success')
     return redirect(url_for('outreach.edit_email', email_id=outreach.id))
 
 

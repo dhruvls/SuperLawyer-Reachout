@@ -143,8 +143,34 @@ def case_detail(case_id):
     analysis = json.loads(case.ai_analysis) if case.ai_analysis else {}
     emails = OutreachEmail.query.filter_by(case_id=case_id, user_id=current_user.id).all()
     is_bookmarked = case in current_user.bookmarked_cases.all()
+
+    # Build per-lawyer outreach status for smart buttons
+    lawyer_outreach = {}
+    for lawyer in case.lawyers:
+        lawyer_emails = [e for e in emails if e.lawyer_id == lawyer.id]
+        primary = next((e for e in lawyer_emails if e.email_type == 'primary'), None)
+        followup = next((e for e in lawyer_emails if e.email_type == 'followup'), None)
+        if not primary:
+            stage = 'none'
+        elif primary.status == 'draft':
+            stage = 'draft'
+        elif primary.status in ('sent', 'pending_followup'):
+            stage = 'sent' if not followup else 'followup_drafted'
+        elif primary.status == 'followed_up':
+            stage = 'done'
+        elif primary.status == 'failed':
+            stage = 'failed'
+        else:
+            stage = 'draft'
+        lawyer_outreach[lawyer.id] = {
+            'stage': stage,
+            'primary': primary,
+            'followup': followup,
+        }
+
     return render_template('case_detail.html', case=case, analysis=analysis,
-                           emails=emails, is_bookmarked=is_bookmarked)
+                           emails=emails, is_bookmarked=is_bookmarked,
+                           lawyer_outreach=lawyer_outreach)
 
 
 @cases_bp.route('/cases/<int:case_id>/update-status', methods=['POST'])
