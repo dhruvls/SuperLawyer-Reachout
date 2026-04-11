@@ -11,14 +11,29 @@ from app.models import LegalCase, Lawyer
 from app.ai.gemma import analyze_case, identify_lawyers_from_search
 
 
-LEGAL_QUERIES = [
+# ── Primary: Direct RSS feeds from top Indian legal news sites ──
+LEGAL_RSS_FEEDS = [
+    ('LiveLaw', 'https://www.livelaw.in/feed'),
+    ('Bar and Bench', 'https://www.barandbench.com/feed'),
+]
+
+# ── Secondary: Site-specific Bing queries for LiveLaw & Bar and Bench ──
+SITE_QUERIES = [
+    'site:livelaw.in Supreme Court case lawyer',
+    'site:livelaw.in High Court ruling advocate',
+    'site:livelaw.in NCLT SEBI case',
+    'site:barandbench.com Supreme Court case lawyer',
+    'site:barandbench.com High Court ruling advocate',
+    'site:barandbench.com corporate NCLT case',
+]
+
+# ── Tertiary: Generic Bing queries (fallback if above yield too few) ──
+FALLBACK_QUERIES = [
     'India Supreme Court landmark case',
     'India High Court ruling lawyer',
     'Indian corporate lawsuit NCLT',
     'SEBI enforcement action India',
-    'India legal dispute settlement',
     'India criminal trial high profile',
-    'Indian antitrust CCI ruling',
 ]
 
 HEADERS = {
@@ -76,6 +91,57 @@ def fetch_news(query, days=15):
         return articles
     except Exception as e:
         current_app.logger.error(f"[NEWS] fetch error: {e}")
+        return []
+
+
+def fetch_rss_direct(feed_url, source_name, days=15):
+    """Fetch articles directly from a legal news site's RSS feed."""
+    try:
+        resp = requests.get(feed_url, headers=HEADERS, timeout=15)
+        current_app.logger.warning(
+            f"[RSS] {source_name}: status={resp.status_code}, len={len(resp.text)}"
+        )
+        feed = feedparser.parse(resp.text)
+        current_app.logger.warning(f"[RSS] {source_name}: {len(feed.entries)} entries")
+
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        articles = []
+        for entry in feed.entries[:15]:
+            published = None
+            if hasattr(entry, 'published_parsed') and entry.published_parsed:
+                published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+                if published < cutoff:
+                    continue
+
+            title = entry.get('title', '').strip()
+            link = entry.get('link', '').strip()
+            if not title or not link:
+                continue
+
+            # Filter: only keep legal/court articles
+            title_lower = title.lower()
+            legal_keywords = [
+                'court', 'judge', 'justice', 'advocate', 'lawyer', 'bench',
+                'petition', 'verdict', 'ruling', 'bail', 'case', 'tribunal',
+                'nclt', 'sebi', 'cci', 'appeal', 'order', 'hearing',
+                'accused', 'conviction', 'acquittal', 'writ', 'plea',
+                'litigation', 'arbitration', 'dispute', 'act', 'section',
+            ]
+            if not any(kw in title_lower for kw in legal_keywords):
+                continue
+
+            articles.append({
+                'title': title,
+                'url': link,
+                'source': source_name,
+                'published': published,
+            })
+        current_app.logger.warning(
+            f"[RSS] {source_name}: {len(articles)} legal articles after filter"
+        )
+        return articles
+    except Exception as e:
+        current_app.logger.error(f"[RSS] {source_name} error: {e}")
         return []
 
 
@@ -366,42 +432,74 @@ def _is_duplicate(title, source_url):
     return False
 
 
+def _collect_all_articles():
+    """Gather articles from 3 tiers: direct RSS, site-specific Bing, generic Bing."""
+    all_articles = []
+    seen_urls = set()
+
+    def _add_unique(articles):
+        for a in articles:
+            url = a['url'].strip()
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                all_articles.append(a)
+
+    # Tier 1: Direct RSS from LiveLaw & Bar and Bench
+    current_app.logger.warning("--- Tier 1: Direct RSS feeds ---")
+    for source_name, feed_url in LEGAL_RSS_FEEDS:
+        _add_unique(fetch_rss_direct(feed_url, source_name))
+
+    current_app.logger.warning(f"[TIER 1] {len(all_articles)} articles from RSS")
+
+    # Tier 2: Site-specific Bing queries (LiveLaw + Bar and Bench)
+    if len(all_articles) < MAX_NEW_CASES * 2:
+        current_app.logger.warning("--- Tier 2: Site-specific Bing ---")
+        for query in SITE_QUERIES:
+            _add_unique(fetch_news(query, days=15))
+        current_app.logger.warning(f"[TIER 2] {len(all_articles)} total articles")
+
+    # Tier 3: Generic Bing queries (fallback)
+    if len(all_articles) < MAX_NEW_CASES:
+        current_app.logger.warning("--- Tier 3: Generic Bing fallback ---")
+        for query in FALLBACK_QUERIES:
+            _add_unique(fetch_news(query, days=15))
+        current_app.logger.warning(f"[TIER 3] {len(all_articles)} total articles")
+
+    return all_articles
+
+
 def scan_for_cases():
-    """Scan Bing News for Indian legal cases, analyze with AI, find lawyer emails."""
+    """Scan LiveLaw, Bar and Bench, and Bing for Indian legal cases."""
     new_cases = []
     total = 0
     current_app.logger.warning("=== SCAN START ===")
 
-    for query in LEGAL_QUERIES:
+    articles = _collect_all_articles()
+    current_app.logger.warning(f"[SCAN] {len(articles)} candidate articles")
+
+    for article in articles:
         if total >= MAX_NEW_CASES:
             break
 
-        articles = fetch_news(query, days=15)
-        per_query = 0
+        title = article['title'].strip()
+        source_url = article['url'].strip()
+        if not title or _is_duplicate(title, source_url):
+            continue
 
-        for article in articles:
-            if per_query >= MAX_PER_QUERY or total >= MAX_NEW_CASES:
-                break
-
-            title = article['title'].strip()
-            source_url = article['url'].strip()
-            if not title or _is_duplicate(title, source_url):
+        try:
+            # Step 1: Scrape article
+            article_text = fetch_article_text(source_url)
+            if len(article_text) < 100:
+                current_app.logger.warning(f"[SKIP] Too short ({len(article_text)}): {title[:50]}")
                 continue
 
-            try:
-                # Step 1: Scrape article
-                article_text = fetch_article_text(source_url)
-                if len(article_text) < 100:
-                    current_app.logger.warning(f"[SKIP] Too short ({len(article_text)}): {title[:50]}")
-                    continue
+            # Step 2: AI analysis
+            current_app.logger.warning(f"[AI] Analyzing: {title[:50]}")
+            analysis = analyze_case(title, article_text)
 
-                # Step 2: AI analysis
-                current_app.logger.warning(f"[AI] Analyzing: {title[:50]}")
-                analysis = analyze_case(title, article_text)
-
-                # Step 3: Multi-source lawyer verification
-                current_app.logger.warning(f"[VERIFY] Multi-source: {title[:50]}")
-                verified_lawyers = _gather_lawyers_multi_source(title, analysis)
+            # Step 3: Multi-source lawyer verification
+            current_app.logger.warning(f"[VERIFY] Multi-source: {title[:50]}")
+            verified_lawyers = _gather_lawyers_multi_source(title, analysis)
 
                 # Build case
                 case = LegalCase(
@@ -446,8 +544,10 @@ def scan_for_cases():
                 db.session.commit()
                 new_cases.append(case)
                 total += 1
-                per_query += 1
-                current_app.logger.warning(f"[SAVED] #{total}: {title[:50]} ({len(case.lawyers)} lawyers)")
+                current_app.logger.warning(
+                    f"[SAVED] #{total}: {title[:50]} "
+                    f"(src: {article['source']}, {len(case.lawyers)} lawyers)"
+                )
 
             except Exception as e:
                 current_app.logger.error(f"[ERROR] Processing '{title[:40]}': {e}")
