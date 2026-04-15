@@ -772,7 +772,7 @@ def scan_for_cases(progress_cb=None) -> dict:
             analysis = analyze_case(title, article_text)
 
             if analysis is None:
-                log(f"  ✗ AI unavailable — skipped")
+                log(f"  ✗ AI returned no result — check GOOGLE_AI_API_KEY and model name")
                 summary['skipped_not_case'] += 1
                 continue
 

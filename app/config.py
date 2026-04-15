@@ -11,7 +11,7 @@ class Config:
 
     # Gemma AI
     GOOGLE_AI_API_KEY = os.getenv('GOOGLE_AI_API_KEY')
-    GEMMA_MODEL = os.getenv('GEMMA_MODEL', 'gemma-3-27b-it')
+    GEMMA_MODEL = os.getenv('GEMMA_MODEL', 'gemini-2.0-flash-lite')
 
     # SMTP
     SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')

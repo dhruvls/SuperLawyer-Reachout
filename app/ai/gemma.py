@@ -19,6 +19,7 @@ def _get_client():
 def _generate(prompt: str) -> str | None:
     client, model = _get_client()
     if not client:
+        current_app.logger.error("[AI] No client — GOOGLE_AI_API_KEY missing or invalid")
         return None
     try:
         response = client.models.generate_content(
@@ -31,8 +32,8 @@ def _generate(prompt: str) -> str | None:
         )
         return response.text
     except Exception as e:
-        current_app.logger.error(f"[AI] generate error: {e}")
-        return None
+        current_app.logger.error(f"[AI] generate error (model={model}): {e}")
+        raise  # re-raise so callers can log the real error message
 
 
 def _parse_json(text: str):
@@ -114,7 +115,11 @@ Title: {title}
 Article:
 {article_text[:4000]}"""
 
-    raw = _generate(prompt)
+    try:
+        raw = _generate(prompt)
+    except Exception as e:
+        current_app.logger.error(f"[AI] analyze_case failed: {e}")
+        return None
     if not raw:
         return None
 
