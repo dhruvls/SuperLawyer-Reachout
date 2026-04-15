@@ -84,8 +84,8 @@ class Lawyer(db.Model):
 
 class OutreachEmail(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    lawyer_id = db.Column(db.Integer, db.ForeignKey('lawyer.id'), nullable=False)
-    case_id = db.Column(db.Integer, db.ForeignKey('legal_case.id'), nullable=False)
+    lawyer_id = db.Column(db.Integer, db.ForeignKey('lawyer.id'), nullable=True)
+    case_id = db.Column(db.Integer, db.ForeignKey('legal_case.id'), nullable=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     subject = db.Column(db.String(500), nullable=False)
     body = db.Column(db.Text, nullable=False)

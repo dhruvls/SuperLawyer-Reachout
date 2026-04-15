@@ -146,10 +146,11 @@ def _run_daily_scan(app):
 
 
 def _migrate_columns(app):
-    """Add columns that db.create_all() can't add to existing tables."""
+    """Add columns / alter constraints that db.create_all() can't handle on existing tables."""
     from sqlalchemy import text, inspect as sa_inspect
     try:
         with db.engine.connect() as conn:
+            # ── Add new lawyer columns ──────────────────────────────────────
             columns = [c['name'] for c in sa_inspect(db.engine).get_columns('lawyer')]
             new_cols = {
                 'email_source': 'VARCHAR(500)',
@@ -164,6 +165,21 @@ def _migrate_columns(app):
                     ))
                     conn.commit()
                     app.logger.info(f'Added {col_name} column.')
+
+            # ── Make outreach_email FKs nullable ───────────────────────────
+            # Required so scan can wipe lawyers/cases without FK violations.
+            # outreach_email rows are preserved but lawyer_id/case_id become NULL.
+            is_pg = str(db.engine.url).startswith('postgresql')
+            if is_pg:
+                for col in ('lawyer_id', 'case_id'):
+                    try:
+                        conn.execute(text(
+                            f"ALTER TABLE outreach_email ALTER COLUMN {col} DROP NOT NULL"
+                        ))
+                        conn.commit()
+                        app.logger.info(f'outreach_email.{col} made nullable.')
+                    except Exception:
+                        pass  # already nullable — safe to ignore
     except Exception:
         pass
 

@@ -269,7 +269,13 @@ def _run_scan_in_background(app):
     with app.app_context():
         try:
             # Wipe existing cases and lawyers so scan always delivers fresh results.
-            # OutreachEmail and CaseNote rows are intentionally preserved (user work).
+            # Null out outreach_email FKs first to avoid FK constraint violations;
+            # the email rows themselves are preserved (user work).
+            from sqlalchemy import text as sa_text
+            db.session.execute(sa_text(
+                "UPDATE outreach_email SET lawyer_id = NULL, case_id = NULL"
+            ))
+            db.session.commit()
             Lawyer.query.delete()
             LegalCase.query.delete()
             db.session.commit()
@@ -343,8 +349,12 @@ def clear_cases():
             return redirect(url_for('cases.case_list'))
 
     try:
-        # Orphan outreach emails (set FK to null-safe) — preserve user drafts/sent history
-        # We deliberately do NOT delete OutreachEmail or CaseNote records
+        # Null out FKs on outreach_email first to avoid FK constraint violations
+        from sqlalchemy import text as sa_text
+        db.session.execute(sa_text(
+            "UPDATE outreach_email SET lawyer_id = NULL, case_id = NULL"
+        ))
+        db.session.commit()
         lawyer_count = Lawyer.query.count()
         case_count = LegalCase.query.count()
         Lawyer.query.delete()
