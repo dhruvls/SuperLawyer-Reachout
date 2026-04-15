@@ -264,10 +264,17 @@ def delete_note(note_id):
 # ─── Scan ────────────────────────────────────────────────────
 
 def _run_scan_in_background(app):
-    """Run scan_for_cases() in a background thread with app context."""
+    """Clear old cases/lawyers, then run scan_for_cases() fresh."""
     global _scan_state
     with app.app_context():
         try:
+            # Wipe existing cases and lawyers so scan always delivers fresh results.
+            # OutreachEmail and CaseNote rows are intentionally preserved (user work).
+            Lawyer.query.delete()
+            LegalCase.query.delete()
+            db.session.commit()
+            app.logger.info("[SCAN] Cleared old cases and lawyers before fresh scan.")
+
             summary = scan_for_cases()
             with _scan_lock:
                 _scan_state['running'] = False
