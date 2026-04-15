@@ -120,12 +120,41 @@
                             <button type="submit" class="btn btn-sm btn-outline-primary"><i class="bi bi-pencil"></i> Draft</button>
                         </form>
                         {% else %}
-                        <a href="{{ url_for('cases.case_detail', case_id=lawyer.case_id) }}" class="btn btn-sm btn-outline-secondary">
+                        <button class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal"
+                                data-bs-target="#emailModal{{ lawyer.id }}">
                             <i class="bi bi-plus"></i> Add Email
-                        </a>
+                        </button>
                         {% endif %}
                     </td>
                 </tr>
+
+                {% if not lawyer.email %}
+                <!-- Inline email modal for {{ lawyer.name }} -->
+                <div class="modal fade" id="emailModal{{ lawyer.id }}" tabindex="-1">
+                    <div class="modal-dialog modal-sm">
+                        <div class="modal-content">
+                            <div class="modal-header py-2">
+                                <h6 class="modal-title mb-0">
+                                    <i class="bi bi-envelope"></i> {{ lawyer.name }}
+                                </h6>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body">
+                                <form method="POST" action="{{ url_for('cases.update_lawyer_email', lawyer_id=lawyer.id) }}">
+                                    <div class="mb-2">
+                                        <input type="email" name="email" class="form-control form-control-sm"
+                                               placeholder="advocate@firm.com" required autofocus>
+                                    </div>
+                                    <button type="submit" class="btn btn-primary btn-sm w-100">
+                                        <i class="bi bi-save"></i> Save Email
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+
                 {% endfor %}
             </tbody>
         </table>

@@ -47,15 +47,60 @@
                         <button type="submit" class="btn btn-primary">
                             <i class="bi bi-save"></i> Save Changes
                         </button>
+                        <a href="{{ url_for('outreach.outreach_list') }}" class="btn btn-outline-secondary">Cancel</a>
                     </div>
                     {% endif %}
                 </form>
-                {% if email.status == 'draft' and email.lawyer.email %}
-                <form method="POST" action="{{ url_for('outreach.send', email_id=email.id) }}" class="mt-3">
-                    <button type="submit" class="btn btn-success btn-lg w-100" onclick="return confirm('Send this email to {{ email.lawyer.email }}?')">
-                        <i class="bi bi-send"></i> Send to {{ email.lawyer.email }}
+
+                {% if email.status == 'draft' %}
+                    {% if email.lawyer.email %}
+                    <form method="POST" action="{{ url_for('outreach.send', email_id=email.id) }}" class="mt-3">
+                        <button type="submit" class="btn btn-success btn-lg w-100"
+                                onclick="return confirm('Send this email to {{ email.lawyer.email }}?')">
+                            <i class="bi bi-send"></i> Send to {{ email.lawyer.email }}
+                        </button>
+                    </form>
+                    {% else %}
+                    <div class="alert alert-warning mt-3 mb-0">
+                        <i class="bi bi-exclamation-triangle"></i>
+                        <strong>No email address.</strong>
+                        <a href="{{ url_for('cases.case_detail', case_id=email.case.id) }}">Go to the case</a>
+                        to add one before sending.
+                    </div>
+                    {% endif %}
+                    <form method="POST" action="{{ url_for('outreach.delete_email', email_id=email.id) }}" class="mt-2">
+                        <button type="submit" class="btn btn-outline-danger btn-sm w-100"
+                                onclick="return confirm('Delete this draft?')">
+                            <i class="bi bi-trash"></i> Delete Draft
+                        </button>
+                    </form>
+
+                {% elif email.status == 'pending_followup' %}
+                <div class="mt-3 d-grid gap-2">
+                    <form method="POST" action="{{ url_for('outreach.generate', lawyer_id=email.lawyer.id) }}">
+                        <input type="hidden" name="email_type" value="followup">
+                        <button type="submit" class="btn btn-warning w-100">
+                            <i class="bi bi-reply"></i> Draft Follow-up Email
+                        </button>
+                    </form>
+                    <a href="{{ url_for('cases.case_detail', case_id=email.case.id) }}" class="btn btn-outline-secondary">
+                        <i class="bi bi-arrow-left"></i> Back to Case
+                    </a>
+                </div>
+
+                {% elif email.status == 'failed' %}
+                <form method="POST" action="{{ url_for('outreach.retry_email', email_id=email.id) }}" class="mt-3">
+                    <button type="submit" class="btn btn-danger w-100">
+                        <i class="bi bi-arrow-repeat"></i> Retry — Reset to Draft
                     </button>
                 </form>
+
+                {% else %}
+                <div class="mt-3">
+                    <a href="{{ url_for('cases.case_detail', case_id=email.case.id) }}" class="btn btn-outline-secondary w-100">
+                        <i class="bi bi-arrow-left"></i> Back to Case
+                    </a>
+                </div>
                 {% endif %}
             </div>
         </div>

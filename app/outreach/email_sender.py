@@ -1,4 +1,5 @@
 import smtplib
+from html import escape
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from flask import current_app
@@ -25,8 +26,8 @@ def send_email(to_address, subject, body, reply_to=None):
     # Plain text
     msg.attach(MIMEText(body, 'plain'))
 
-    # Simple HTML version
-    html_body = body.replace('\n', '<br>')
+    # Simple HTML version — escape special chars before converting newlines
+    html_body = escape(body).replace('\n', '<br>')
     html = f"""<html><body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
 {html_body}
 </body></html>"""

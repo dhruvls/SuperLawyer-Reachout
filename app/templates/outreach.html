@@ -106,9 +106,14 @@
                         {% elif email.status == 'sent' %}
                         <span class="badge bg-success"><i class="bi bi-check2"></i> Sent</span>
                         {% elif email.status == 'pending_followup' %}
+                        {% if email.followup_date and email.followup_date < now %}
+                        <span class="badge bg-danger"><i class="bi bi-exclamation-circle"></i> Overdue</span>
+                        <small class="d-block text-danger fw-bold">Was due {{ email.followup_date.strftime('%b %d') }}</small>
+                        {% else %}
                         <span class="badge bg-warning text-dark"><i class="bi bi-clock"></i> Follow-up due</span>
                         {% if email.followup_date %}
-                        <small class="d-block text-warning">{{ email.followup_date.strftime('%b %d') }}</small>
+                        <small class="d-block text-muted">{{ email.followup_date.strftime('%b %d') }}</small>
+                        {% endif %}
                         {% endif %}
                         {% elif email.status == 'followed_up' %}
                         <span class="badge bg-primary"><i class="bi bi-check-all"></i> Complete</span>
@@ -124,10 +129,25 @@
                             <a href="{{ url_for('outreach.edit_email', email_id=email.id) }}" class="btn btn-outline-primary" title="Edit">
                                 <i class="bi bi-pencil"></i>
                             </a>
-                            {% if email.status == 'draft' and email.lawyer.email %}
-                            <form method="POST" action="{{ url_for('outreach.send', email_id=email.id) }}" class="d-inline">
-                                <button type="submit" class="btn btn-outline-success btn-sm" onclick="return confirm('Send to {{ email.lawyer.email }}?')" title="Send">
-                                    <i class="bi bi-send"></i>
+                            {% if email.status == 'draft' %}
+                                {% if email.lawyer.email %}
+                                <form method="POST" action="{{ url_for('outreach.send', email_id=email.id) }}" class="d-inline">
+                                    <button type="submit" class="btn btn-outline-success btn-sm"
+                                            onclick="return confirm('Send to {{ email.lawyer.email }}?')" title="Send">
+                                        <i class="bi bi-send"></i>
+                                    </button>
+                                </form>
+                                {% else %}
+                                <button class="btn btn-outline-secondary btn-sm" disabled
+                                        title="No email address — go to the case and add one">
+                                    <i class="bi bi-envelope-x"></i>
+                                </button>
+                                {% endif %}
+                            {% endif %}
+                            {% if email.status == 'failed' %}
+                            <form method="POST" action="{{ url_for('outreach.retry_email', email_id=email.id) }}" class="d-inline">
+                                <button type="submit" class="btn btn-outline-danger btn-sm" title="Reset to draft and retry">
+                                    <i class="bi bi-arrow-repeat"></i>
                                 </button>
                             </form>
                             {% endif %}

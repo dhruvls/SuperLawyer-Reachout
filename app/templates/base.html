@@ -22,16 +22,20 @@
             <div class="collapse navbar-collapse" id="navMain">
                 <ul class="navbar-nav me-auto">
                     <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('cases.dashboard') }}"><i class="bi bi-grid"></i> Dashboard</a>
+                        <a class="nav-link {{ 'active' if request.endpoint == 'cases.dashboard' }}"
+                           href="{{ url_for('cases.dashboard') }}"><i class="bi bi-grid"></i> Dashboard</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('cases.case_list') }}"><i class="bi bi-folder2-open"></i> Cases</a>
+                        <a class="nav-link {{ 'active' if request.endpoint and request.endpoint.startswith('cases.case') }}"
+                           href="{{ url_for('cases.case_list') }}"><i class="bi bi-folder2-open"></i> Cases</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('cases.lawyer_directory') }}"><i class="bi bi-people"></i> Lawyers</a>
+                        <a class="nav-link {{ 'active' if request.endpoint and request.endpoint.startswith('cases.lawyer') }}"
+                           href="{{ url_for('cases.lawyer_directory') }}"><i class="bi bi-people"></i> Lawyers</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="{{ url_for('outreach.outreach_list') }}"><i class="bi bi-envelope"></i> Outreach</a>
+                        <a class="nav-link {{ 'active' if request.endpoint and request.endpoint.startswith('outreach.') }}"
+                           href="{{ url_for('outreach.outreach_list') }}"><i class="bi bi-envelope"></i> Outreach</a>
                     </li>
                 </ul>
                 <ul class="navbar-nav">

@@ -95,6 +95,13 @@ def dashboard():
         .all()
     )
 
+    ai_configured = bool(current_app.config.get('GOOGLE_AI_API_KEY'))
+    smtp_configured = all([
+        current_app.config.get('SMTP_SERVER'),
+        current_app.config.get('SMTP_USERNAME'),
+        current_app.config.get('SMTP_PASSWORD'),
+    ])
+
     return render_template(
         'dashboard.html',
         total_cases=total_cases,
@@ -112,6 +119,8 @@ def dashboard():
         pa_values=json.dumps(pa_values),
         funnel=json.dumps(funnel),
         status_counts=json.dumps(status_counts),
+        ai_configured=ai_configured,
+        smtp_configured=smtp_configured,
     )
 
 

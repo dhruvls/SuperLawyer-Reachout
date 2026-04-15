@@ -17,7 +17,8 @@ def outreach_list():
     if status_filter != 'all':
         q = q.filter_by(status=status_filter)
     emails = q.order_by(OutreachEmail.created_at.desc()).all()
-    return render_template('outreach.html', emails=emails, status=status_filter)
+    return render_template('outreach.html', emails=emails, status=status_filter,
+                           now=datetime.now(timezone.utc))
 
 
 @outreach_bp.route('/outreach/generate/<int:lawyer_id>', methods=['POST'])
@@ -126,6 +127,23 @@ def send(email_id):
         flash(f'Send failed: {str(e)}', 'error')
 
     return redirect(url_for('outreach.outreach_list'))
+
+
+@outreach_bp.route('/outreach/<int:email_id>/retry', methods=['POST'])
+@login_required
+def retry_email(email_id):
+    """Reset a failed email back to draft so the user can edit and resend."""
+    outreach = db.get_or_404(OutreachEmail, email_id)
+    if outreach.user_id != current_user.id:
+        flash('Unauthorized.', 'error')
+        return redirect(url_for('outreach.outreach_list'))
+    if outreach.status != 'failed':
+        flash('Only failed emails can be retried.', 'error')
+        return redirect(url_for('outreach.outreach_list'))
+    outreach.status = 'draft'
+    db.session.commit()
+    flash('Email reset to draft. Edit and resend.', 'info')
+    return redirect(url_for('outreach.edit_email', email_id=outreach.id))
 
 
 @outreach_bp.route('/outreach/<int:email_id>/delete', methods=['POST'])
