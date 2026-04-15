@@ -541,121 +541,278 @@ def _is_valid_email(email: str) -> bool:
     return bool(_EMAIL_RE.fullmatch(email))
 
 
-def _infer_email_patterns(first: str, last: str, domain: str) -> list:
-    """Generate candidate email addresses from name + domain."""
-    f, l = first.lower(), last.lower()
-    return [
-        f"{f}@{domain}",
-        f"{f}.{l}@{domain}",
-        f"{f[0]}{l}@{domain}",
-        f"{f}{l[0]}@{domain}",
-        f"{f}_{l}@{domain}",
-    ]
+_GENERIC_DOMAINS = {
+    'wikipedia', 'linkedin', 'google', 'bing', 'youtube', 'facebook',
+    'twitter', 'x.com', 'instagram', 'justdial', 'indiakanoon',
+    'barandbench', 'livelaw', 'lawrato', 'advocatekhoj',
+}
+_FIRM_PAGE_PATHS = ['/team', '/people', '/attorneys', '/lawyers', '/our-team',
+                    '/our-lawyers', '/professionals', '/partners', '/contact']
 
 
 def _extract_domain_from_firm(firm: str) -> str | None:
-    """Try to extract a likely domain from a firm name for email pattern inference."""
+    """Find the law firm's website domain via Bing."""
     if not firm or firm.lower() in ('unknown firm', 'n/a', ''):
         return None
-    # Search Bing for the firm website
     try:
         query = quote_plus(f"{firm} India law firm official website")
-        url = f"https://www.bing.com/search?q={query}&count=3"
-        resp = requests.get(url, headers=HEADERS, timeout=8)
+        resp = requests.get(f"https://www.bing.com/search?q={query}&count=3",
+                            headers=HEADERS, timeout=8)
         soup = BeautifulSoup(resp.text, 'html.parser')
         for a in soup.select('.b_algo h2 a'):
             href = a.get('href', '')
-            if href.startswith('http') and 'bing.com' not in href and 'microsoft.com' not in href:
-                # Extract domain from URL
+            if href.startswith('http'):
                 m = re.match(r'https?://(?:www\.)?([^/]+)', href)
                 if m:
                     domain = m.group(1).lower()
-                    # Skip generic sites
-                    if not any(g in domain for g in ['wikipedia', 'linkedin', 'google', 'bing', 'youtube']):
+                    if not any(g in domain for g in _GENERIC_DOMAINS):
                         return domain
     except Exception:
         pass
     return None
 
 
+def _scrape_firm_pages(firm_domain: str, lawyer_name: str) -> str | None:
+    """
+    Scrape firm's team/contact pages for a specific lawyer's email.
+    Checks /team, /people, /attorneys, /contact, etc.
+    """
+    name_parts = [p.lower() for p in _normalize_name(lawyer_name).split() if len(p) > 3]
+    base = f"https://{firm_domain}"
+    for path in _FIRM_PAGE_PATHS:
+        try:
+            resp = requests.get(base + path, headers=HEADERS, timeout=6, allow_redirects=True)
+            if resp.status_code != 200:
+                continue
+            text = resp.text
+            # Only process if this page mentions the lawyer
+            text_lower = text.lower()
+            if not any(p in text_lower for p in name_parts):
+                continue
+            emails = [e for e in _EMAIL_RE.findall(text) if _is_valid_email(e)]
+            if emails:
+                current_app.logger.info(
+                    f"[CONTACT] {lawyer_name}: email on {firm_domain}{path}"
+                )
+                return emails[0]
+        except Exception:
+            continue
+    return None
+
+
+def _search_lawrato(name: str) -> str | None:
+    """Search LawRato.com India lawyer directory for an email address."""
+    try:
+        encoded = quote_plus(name)
+        resp = requests.get(
+            f"https://lawrato.com/find-lawyers?search={encoded}",
+            headers=HEADERS, timeout=10
+        )
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        name_parts = [p.lower() for p in _normalize_name(name).split() if len(p) > 3]
+
+        # Find matching lawyer profile links
+        for a in soup.select('a[href*="/indian-lawyers/"], a[href*="/lawyer/"]'):
+            link_text = a.get_text(strip=True).lower()
+            if not any(p in link_text for p in name_parts):
+                continue
+            href = a.get('href', '')
+            profile_url = href if href.startswith('http') else 'https://lawrato.com' + href
+            try:
+                prof_resp = requests.get(profile_url, headers=HEADERS, timeout=8)
+                emails = [e for e in _EMAIL_RE.findall(prof_resp.text) if _is_valid_email(e)]
+                if emails:
+                    current_app.logger.info(f"[LAWRATO] {name}: {emails[0]}")
+                    return emails[0]
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def _search_advocatekhoj(name: str) -> str | None:
+    """Search AdvocateKhoj.com India lawyer directory for contact info."""
+    try:
+        encoded = quote_plus(name)
+        resp = requests.get(
+            f"https://www.advocatekhoj.com/lawyers/index.php?loc=0&sname={encoded}",
+            headers=HEADERS, timeout=10
+        )
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        name_parts = [p.lower() for p in _normalize_name(name).split() if len(p) > 3]
+
+        for a in soup.select('a[href*="lawyerdetails"], a[href*="lawyer-details"]'):
+            link_text = a.get_text(strip=True).lower()
+            if not any(p in link_text for p in name_parts):
+                continue
+            href = a.get('href', '')
+            profile_url = href if href.startswith('http') else 'https://www.advocatekhoj.com' + href
+            try:
+                prof_resp = requests.get(profile_url, headers=HEADERS, timeout=8)
+                emails = [e for e in _EMAIL_RE.findall(prof_resp.text) if _is_valid_email(e)]
+                if emails:
+                    current_app.logger.info(f"[AKHOJ] {name}: {emails[0]}")
+                    return emails[0]
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def _hunter_find_email(name: str, domain: str) -> str | None:
+    """Use Hunter.io email-finder API (if HUNTER_API_KEY is set)."""
+    api_key = current_app.config.get('HUNTER_API_KEY')
+    if not api_key or not domain:
+        return None
+    parts = _normalize_name(name).split()
+    if len(parts) < 2:
+        return None
+    try:
+        resp = requests.get(
+            'https://api.hunter.io/v2/email-finder',
+            params={
+                'domain': domain,
+                'first_name': parts[0],
+                'last_name': parts[-1],
+                'api_key': api_key,
+            },
+            timeout=10
+        )
+        data = resp.json().get('data', {})
+        email = data.get('email')
+        score = data.get('score', 0)
+        if email and score >= 50:
+            current_app.logger.info(f"[HUNTER] {name}: {email} (score={score})")
+            return email
+    except Exception as e:
+        current_app.logger.error(f"[HUNTER] {name}: {e}")
+    return None
+
+
+def _bing_search_email(name: str, firm: str) -> tuple[str | None, str | None]:
+    """
+    Try multiple Bing query variants to find an email address.
+    Returns (email, linkedin_url).
+    """
+    firm_str = f'"{firm}" ' if firm and firm.lower() not in ('unknown firm', '', 'n/a') else ''
+    queries = [
+        f'"{name}" {firm_str}advocate email India',
+        f'"{name}" {firm_str}lawyer contact India',
+        f'"{name}" senior advocate India email OR contact',
+        f'{name} advocate India "@" email',
+    ]
+
+    found_email = None
+    found_linkedin = None
+
+    for query in queries:
+        if found_email:
+            break
+        try:
+            resp = requests.get(
+                f"https://www.bing.com/search?q={quote_plus(query)}&count=10",
+                headers=HEADERS, timeout=10
+            )
+            html = resp.text
+            emails = [e for e in _EMAIL_RE.findall(html) if _is_valid_email(e)]
+            linkedins = _LINKEDIN_RE.findall(html)
+
+            if emails:
+                found_email = emails[0]
+            if linkedins and not found_linkedin:
+                found_linkedin = linkedins[0]
+
+            if not found_email:
+                # Scrape top 3 result pages
+                soup = BeautifulSoup(html, 'html.parser')
+                links = [
+                    a.get('href', '') for a in soup.select('.b_algo h2 a')
+                    if a.get('href', '').startswith('http') and 'bing.com' not in a.get('href', '')
+                ]
+                for link in links[:3]:
+                    try:
+                        pr = requests.get(link, headers=HEADERS, timeout=7, allow_redirects=True)
+                        pe = [e for e in _EMAIL_RE.findall(pr.text) if _is_valid_email(e)]
+                        pl = _LINKEDIN_RE.findall(pr.text)
+                        if pe:
+                            found_email = pe[0]
+                            break
+                        if pl and not found_linkedin:
+                            found_linkedin = pl[0]
+                    except Exception:
+                        continue
+        except Exception:
+            continue
+
+    return found_email, found_linkedin
+
+
 def _discover_contacts(name: str, firm: str) -> tuple[str | None, str | None, str | None]:
     """
-    Find email and LinkedIn for a lawyer.
+    Find email and LinkedIn for a lawyer using 5 source tiers.
+
+    Sources (in order):
+      1. Bing — 4 query variants + page scraping
+      2. LawRato.com — India lawyer directory
+      3. AdvocateKhoj.com — India bar directory
+      4. Firm website team/contact pages (scrape /team, /people, /attorneys…)
+      5. Hunter.io API (only if HUNTER_API_KEY env var is set)
+
+    Pattern inference removed — unverified guesses pollute the DB.
     Returns (email, linkedin_url, email_source).
-    email_source: 'bing_search', 'firm_website', 'pattern_inferred'
     """
     if not name or _normalize_name(name) in NAME_BLOCKLIST:
         return None, None, None
 
-    # Step 1: Bing search for email + LinkedIn
-    firm_str = f' "{firm}"' if firm and firm.lower() not in ('unknown firm', '', 'n/a') else ''
-    query = quote_plus(f'"{name}"{firm_str} advocate email India')
-    url = f"https://www.bing.com/search?q={query}&count=10"
-    found_email = None
-    found_linkedin = None
-    found_source = None
+    found_email: str | None = None
+    found_linkedin: str | None = None
+    found_source: str | None = None
 
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=10)
-        html = resp.text
-        emails = [e for e in _EMAIL_RE.findall(html) if _is_valid_email(e)]
-        linkedins = _LINKEDIN_RE.findall(html)
+    # ── 1. Bing (4 query variants) ────────────────────────────────────────────
+    found_email, found_linkedin = _bing_search_email(name, firm)
+    if found_email:
+        found_source = 'bing_search'
 
-        if emails:
-            found_email = emails[0]
-            found_source = 'bing_search'
-        if linkedins:
-            found_linkedin = linkedins[0]
+    # ── 2. LawRato directory ──────────────────────────────────────────────────
+    if not found_email:
+        found_email = _search_lawrato(name)
+        if found_email:
+            found_source = 'lawrato'
 
-        if not found_email:
-            # Scrape top 3 result pages
-            soup = BeautifulSoup(html, 'html.parser')
-            page_links = [
-                a.get('href', '') for a in soup.select('.b_algo h2 a')
-                if 'bing.com' not in a.get('href', '') and a.get('href', '').startswith('http')
-            ]
-            for link in page_links[:3]:
-                try:
-                    page_resp = requests.get(link, headers=HEADERS, timeout=8, allow_redirects=True)
-                    page_emails = [e for e in _EMAIL_RE.findall(page_resp.text) if _is_valid_email(e)]
-                    page_li = _LINKEDIN_RE.findall(page_resp.text)
-                    if page_emails:
-                        found_email = page_emails[0]
-                        found_source = 'firm_website'
-                        current_app.logger.info(f"[CONTACT] {name}: email via {link[:50]}")
-                        break
-                    if page_li and not found_linkedin:
-                        found_linkedin = page_li[0]
-                except Exception:
-                    continue
-    except Exception as e:
-        current_app.logger.error(f"[CONTACT] Bing search for {name}: {e}")
+    # ── 3. AdvocateKhoj directory ─────────────────────────────────────────────
+    if not found_email:
+        found_email = _search_advocatekhoj(name)
+        if found_email:
+            found_source = 'advocatekhoj'
 
-    # Step 2: LinkedIn-specific search if not found yet
+    # ── 4. Firm website team/contact pages ───────────────────────────────────
+    if not found_email and firm:
+        domain = _extract_domain_from_firm(firm)
+        if domain:
+            found_email = _scrape_firm_pages(domain, name)
+            if found_email:
+                found_source = 'firm_website'
+            # Hunter.io on firm domain as a bonus step
+            if not found_email:
+                found_email = _hunter_find_email(name, domain)
+                if found_email:
+                    found_source = 'hunter_io'
+
+    # ── 5. LinkedIn (always try, independent of email search) ─────────────────
     if not found_linkedin:
         try:
             li_query = quote_plus(f'"{name}" advocate India site:linkedin.com/in/')
-            li_url = f"https://www.bing.com/search?q={li_query}&count=3"
-            li_resp = requests.get(li_url, headers=HEADERS, timeout=8)
+            li_resp = requests.get(
+                f"https://www.bing.com/search?q={li_query}&count=3",
+                headers=HEADERS, timeout=8
+            )
             li_matches = _LINKEDIN_RE.findall(li_resp.text)
             if li_matches:
                 found_linkedin = li_matches[0]
         except Exception:
             pass
-
-    # Step 3: Email pattern inference from firm domain (if still no email)
-    if not found_email and firm:
-        domain = _extract_domain_from_firm(firm)
-        if domain:
-            parts = _normalize_name(name).split()
-            if len(parts) >= 2:
-                candidates = _infer_email_patterns(parts[0], parts[-1], domain)
-                # Use the most likely pattern; we don't verify live (no SMTP check)
-                found_email = candidates[0]  # first.last@domain is most common in India
-                found_source = 'pattern_inferred'
-                current_app.logger.info(
-                    f"[CONTACT] {name}: inferred email {found_email} via {domain}"
-                )
 
     return found_email, found_linkedin, found_source
 
