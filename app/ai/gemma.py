@@ -3,7 +3,7 @@ from google import genai
 from google.genai import types
 from flask import current_app
 
-GEMINI_MODEL = 'gemini-2.0-flash-lite'
+GEMMA_MODEL = 'gemma-4-31b-it'
 
 
 def _get_client():
@@ -12,7 +12,7 @@ def _get_client():
         current_app.logger.error("GOOGLE_AI_API_KEY not set")
         return None, None
     client = genai.Client(api_key=api_key)
-    model = current_app.config.get('GEMMA_MODEL', GEMINI_MODEL)
+    model = current_app.config.get('GEMMA_MODEL', GEMMA_MODEL)
     return client, model
 
 
