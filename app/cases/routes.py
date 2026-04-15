@@ -236,6 +236,17 @@ def add_note(case_id):
     return redirect(url_for('cases.case_detail', case_id=case_id))
 
 
+@cases_bp.route('/cases/<int:case_id>/delete', methods=['POST'])
+@login_required
+def delete_case(case_id):
+    case = db.get_or_404(LegalCase, case_id)
+    Lawyer.query.filter_by(case_id=case.id).delete()
+    db.session.delete(case)
+    db.session.commit()
+    flash('Case removed.', 'success')
+    return redirect(url_for('cases.case_list'))
+
+
 @cases_bp.route('/notes/<int:note_id>/delete', methods=['POST'])
 @login_required
 def delete_note(note_id):

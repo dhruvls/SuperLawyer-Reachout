@@ -85,6 +85,12 @@
                     </select>
                     <button type="submit" class="btn btn-sm btn-outline-primary">Update Status</button>
                 </form>
+                <form method="POST" action="{{ url_for('cases.delete_case', case_id=case.id) }}" class="d-inline ms-2"
+                      onsubmit="return confirm('Remove this case and all its lawyers? This cannot be undone.')">
+                    <button type="submit" class="btn btn-sm btn-outline-danger">
+                        <i class="bi bi-trash"></i> Remove Case
+                    </button>
+                </form>
             </div>
         </div>
 
