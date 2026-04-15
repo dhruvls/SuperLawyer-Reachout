@@ -192,7 +192,15 @@
                     <small class="text-success d-block mt-1">
                         <i class="bi bi-envelope-check"></i> {{ lawyer.email }}
                         {% if lawyer.email_source %}
-                        <a href="{{ lawyer.email_source }}" target="_blank" class="text-muted ms-1" title="Source"><i class="bi bi-box-arrow-up-right"></i></a>
+                        <span class="text-muted ms-1" title="Email source">
+                            &middot;
+                            {% if lawyer.email_source == 'firm_website' %}via firm website
+                            {% elif lawyer.email_source == 'bing_search' %}via web search
+                            {% elif lawyer.email_source == 'pattern_inferred' %}inferred pattern
+                            {% elif lawyer.email_source == 'Manual' %}manually added
+                            {% else %}{{ lawyer.email_source }}
+                            {% endif %}
+                        </span>
                         {% endif %}
                     </small>
                     {% else %}
@@ -211,17 +219,21 @@
                         {% if stage == 'none' %}
                         <form method="POST" action="{{ url_for('outreach.generate', lawyer_id=lawyer.id) }}">
                             <input type="hidden" name="email_type" value="primary">
-                            <button type="submit" class="btn btn-sm btn-primary w-100">
+                            <button type="submit" class="btn btn-sm btn-primary w-100"
+                                    {% if not lawyer.email %}disabled title="Add email address first"{% endif %}>
                                 <i class="bi bi-pencil"></i> Draft Outreach Email
                             </button>
                         </form>
+
                         {% elif stage == 'draft' %}
                         <div class="d-flex gap-1 align-items-center">
-                            <span class="badge bg-secondary"><i class="bi bi-file-earmark"></i> Draft ready</span>
-                            <a href="{{ url_for('outreach.edit_email', email_id=lo.primary.id) }}" class="btn btn-sm btn-outline-primary flex-grow-1">
+                            <span class="badge bg-secondary"><i class="bi bi-file-earmark"></i> Draft</span>
+                            <a href="{{ url_for('outreach.edit_email', email_id=lo.primary.id) }}"
+                               class="btn btn-sm btn-outline-primary flex-grow-1">
                                 <i class="bi bi-pencil"></i> Edit & Send
                             </a>
                         </div>
+
                         {% elif stage == 'sent' %}
                         <div class="mb-1">
                             <span class="badge bg-success"><i class="bi bi-check2"></i> Primary sent</span>
@@ -235,22 +247,48 @@
                                 <i class="bi bi-reply"></i> Draft Follow-up
                             </button>
                         </form>
+
+                        {% elif stage == 'pending_followup' %}
+                        <div class="mb-1">
+                            <span class="badge bg-success"><i class="bi bi-check2"></i> Primary sent</span>
+                            {% if lo.primary.sent_at %}
+                            <small class="text-muted ms-1">{{ lo.primary.sent_at.strftime('%b %d') }}</small>
+                            {% endif %}
+                        </div>
+                        {% if lo.primary.followup_date %}
+                        <div class="mb-1">
+                            <small class="text-warning"><i class="bi bi-clock"></i>
+                                Follow-up due {{ lo.primary.followup_date.strftime('%b %d') }}
+                            </small>
+                        </div>
+                        {% endif %}
+                        <form method="POST" action="{{ url_for('outreach.generate', lawyer_id=lawyer.id) }}">
+                            <input type="hidden" name="email_type" value="followup">
+                            <button type="submit" class="btn btn-sm btn-outline-warning w-100">
+                                <i class="bi bi-reply"></i> Draft Follow-up Now
+                            </button>
+                        </form>
+
                         {% elif stage == 'followup_drafted' %}
                         <div class="mb-1">
                             <span class="badge bg-success"><i class="bi bi-check2"></i> Primary sent</span>
                         </div>
                         <div class="d-flex gap-1 align-items-center">
                             <span class="badge bg-warning text-dark"><i class="bi bi-reply"></i> Follow-up drafted</span>
-                            <a href="{{ url_for('outreach.edit_email', email_id=lo.followup.id) }}" class="btn btn-sm btn-outline-warning flex-grow-1">
+                            <a href="{{ url_for('outreach.edit_email', email_id=lo.followup.id) }}"
+                               class="btn btn-sm btn-outline-warning flex-grow-1">
                                 Edit & Send
                             </a>
                         </div>
+
                         {% elif stage == 'done' %}
                         <span class="badge bg-primary"><i class="bi bi-check-all"></i> Outreach complete</span>
+
                         {% elif stage == 'failed' %}
                         <div class="d-flex gap-1 align-items-center">
                             <span class="badge bg-danger"><i class="bi bi-x-circle"></i> Send failed</span>
-                            <a href="{{ url_for('outreach.edit_email', email_id=lo.primary.id) }}" class="btn btn-sm btn-outline-danger flex-grow-1">
+                            <a href="{{ url_for('outreach.edit_email', email_id=lo.primary.id) }}"
+                               class="btn btn-sm btn-outline-danger flex-grow-1">
                                 Retry
                             </a>
                         </div>

@@ -99,12 +99,24 @@ def send(email_id):
             subject=outreach.subject,
             body=outreach.body,
         )
-        outreach.status = 'sent'
-        outreach.sent_at = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc)
+        outreach.sent_at = now
 
         if outreach.email_type == 'primary':
-            outreach.followup_date = datetime.now(timezone.utc) + timedelta(days=3)
+            # Primary sent — schedule follow-up in 3 days
             outreach.status = 'pending_followup'
+            outreach.followup_date = now + timedelta(days=3)
+
+        elif outreach.email_type == 'followup':
+            # Follow-up sent — mark this email as sent and close the primary loop
+            outreach.status = 'sent'
+            primary = OutreachEmail.query.filter_by(
+                lawyer_id=lawyer.id,
+                user_id=current_user.id,
+                email_type='primary',
+            ).first()
+            if primary:
+                primary.status = 'followed_up'
 
         db.session.commit()
         flash(f'Email sent to {lawyer.email}.', 'success')

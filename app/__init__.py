@@ -136,8 +136,11 @@ def _run_daily_scan(app):
         from app.cases.tracker import scan_for_cases
         app.logger.info("Starting daily scheduled scan...")
         try:
-            new_cases = scan_for_cases()
-            app.logger.info(f"Daily scan complete: {len(new_cases)} new cases")
+            summary = scan_for_cases()
+            app.logger.info(
+                f"Daily scan complete: {summary.get('new_cases', 0)} new cases, "
+                f"{summary.get('lawyers_found', 0)} lawyers"
+            )
         except Exception as e:
             app.logger.error(f"Daily scan failed: {e}")
 

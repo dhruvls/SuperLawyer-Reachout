@@ -1,6 +1,7 @@
 import io
 import csv
 import json
+import threading
 from datetime import datetime, timedelta, timezone
 from flask import (Blueprint, render_template, request, flash, redirect,
                    url_for, jsonify, current_app, Response)
@@ -11,6 +12,16 @@ from app.cases.tracker import scan_for_cases
 from app.ai.gemma import search_cases
 
 cases_bp = Blueprint('cases', __name__)
+
+# ── Background scan state ────────────────────────────────────────────────────
+_scan_state: dict = {
+    'running': False,
+    'started_at': None,
+    'finished_at': None,
+    'result': None,   # summary dict from scan_for_cases()
+    'error': None,
+}
+_scan_lock = threading.Lock()
 
 
 # ─── Dashboard ───────────────────────────────────────────────
@@ -154,8 +165,10 @@ def case_detail(case_id):
             stage = 'none'
         elif primary.status == 'draft':
             stage = 'draft'
-        elif primary.status in ('sent', 'pending_followup'):
-            stage = 'sent' if not followup else 'followup_drafted'
+        elif primary.status == 'pending_followup':
+            stage = 'followup_drafted' if followup else 'pending_followup'
+        elif primary.status == 'sent':
+            stage = 'followup_drafted' if followup else 'sent'
         elif primary.status == 'followed_up':
             stage = 'done'
         elif primary.status == 'failed':
@@ -230,46 +243,94 @@ def delete_note(note_id):
 
 # ─── Scan ────────────────────────────────────────────────────
 
+def _run_scan_in_background(app):
+    """Run scan_for_cases() in a background thread with app context."""
+    global _scan_state
+    with app.app_context():
+        try:
+            summary = scan_for_cases()
+            with _scan_lock:
+                _scan_state['running'] = False
+                _scan_state['finished_at'] = datetime.now(timezone.utc).isoformat()
+                _scan_state['result'] = summary
+                _scan_state['error'] = None
+        except Exception as e:
+            app.logger.error(f"[SCAN THREAD] error: {e}")
+            with _scan_lock:
+                _scan_state['running'] = False
+                _scan_state['finished_at'] = datetime.now(timezone.utc).isoformat()
+                _scan_state['error'] = str(e)
+
+
 @cases_bp.route('/cases/scan', methods=['POST'])
 @login_required
 def trigger_scan():
-    try:
-        new_cases = scan_for_cases()
-        msg = f'Scan complete. Found {len(new_cases)} new cases.'
-        if request.headers.get('Accept') == 'application/json':
-            return jsonify({'status': 'ok', 'new_cases': len(new_cases), 'message': msg})
-        flash(msg, 'success')
-    except Exception as e:
-        current_app.logger.error(f"Scan error: {e}")
-        msg = f'Scan error: {str(e)}'
-        if request.headers.get('Accept') == 'application/json':
-            return jsonify({'status': 'error', 'message': msg}), 500
-        flash(msg, 'error')
+    global _scan_state
+    with _scan_lock:
+        if _scan_state['running']:
+            if request.headers.get('Accept') == 'application/json':
+                return jsonify({'status': 'already_running'})
+            flash('Scan is already running. Check back in a few minutes.', 'info')
+            return redirect(url_for('cases.case_list'))
+
+        _scan_state['running'] = True
+        _scan_state['started_at'] = datetime.now(timezone.utc).isoformat()
+        _scan_state['finished_at'] = None
+        _scan_state['result'] = None
+        _scan_state['error'] = None
+
+    thread = threading.Thread(
+        target=_run_scan_in_background,
+        args=(current_app._get_current_object(),),
+        daemon=True,
+    )
+    thread.start()
+
+    if request.headers.get('Accept') == 'application/json':
+        return jsonify({'status': 'started'})
+    flash('Scan started in the background. This page will update when complete.', 'info')
     return redirect(url_for('cases.case_list'))
+
+
+@cases_bp.route('/cases/scan/status')
+@login_required
+def scan_status():
+    """Return current scan state as JSON (polled by the UI)."""
+    with _scan_lock:
+        state = dict(_scan_state)
+    return jsonify(state)
 
 
 @cases_bp.route('/cases/clear', methods=['POST'])
 @login_required
 def clear_cases():
+    """
+    Delete all cases and lawyers, preserving user-created outreach emails and notes.
+    NOTE: Outreach emails and notes reference case/lawyer FKs — they become orphaned
+    but are intentionally kept so user work is not lost.
+    """
+    global _scan_state
+    with _scan_lock:
+        if _scan_state['running']:
+            flash('Cannot clear while a scan is running.', 'warning')
+            return redirect(url_for('cases.case_list'))
+
     try:
-        OutreachEmail.query.delete()
-        CaseNote.query.delete()
+        # Orphan outreach emails (set FK to null-safe) — preserve user drafts/sent history
+        # We deliberately do NOT delete OutreachEmail or CaseNote records
+        lawyer_count = Lawyer.query.count()
+        case_count = LegalCase.query.count()
         Lawyer.query.delete()
         LegalCase.query.delete()
         db.session.commit()
-
-        new_cases = scan_for_cases()
-        msg = f'Cleared and rescanned. Found {len(new_cases)} new cases.'
-        if request.headers.get('Accept') == 'application/json':
-            return jsonify({'status': 'ok', 'new_cases': len(new_cases), 'message': msg})
-        flash(msg, 'success')
+        current_app.logger.info(
+            f"[CLEAR] {case_count} cases, {lawyer_count} lawyers deleted by user {current_user.id}"
+        )
+        flash(f'Cleared {case_count} cases and {lawyer_count} lawyers. Your emails and notes are preserved.', 'success')
     except Exception as e:
         db.session.rollback()
-        current_app.logger.error(f"Clear/scan error: {e}")
-        msg = f'Error: {str(e)}'
-        if request.headers.get('Accept') == 'application/json':
-            return jsonify({'status': 'error', 'message': msg}), 500
-        flash(msg, 'error')
+        current_app.logger.error(f"[CLEAR] error: {e}")
+        flash(f'Error clearing data: {str(e)}', 'error')
     return redirect(url_for('cases.case_list'))
 
 
@@ -367,47 +428,50 @@ def export_lawyers_csv():
 @cases_bp.route('/cases/debug')
 @login_required
 def debug_api():
-    import google.generativeai as genai
     import traceback
+    import requests as req
+    import feedparser
+    from google import genai
+    from google.genai import types
 
     results = {}
     api_key = current_app.config.get('GOOGLE_AI_API_KEY')
-    model_name = current_app.config.get('GEMMA_MODEL', 'gemma-3-27b-it')
+    model_name = current_app.config.get('GEMMA_MODEL', 'gemini-2.0-flash-lite')
     results['api_key_set'] = bool(api_key)
     results['model_name'] = model_name
 
-    if not api_key:
-        return jsonify(results)
-
-    genai.configure(api_key=api_key)
-
-    try:
-        models = [m.name for m in genai.list_models()
-                  if 'gemma' in m.name.lower() or 'gemini' in m.name.lower()]
-        results['available_models'] = sorted(models)[:30]
-    except Exception as e:
-        results['list_models_error'] = str(e)
-
-    try:
-        model = genai.GenerativeModel(model_name)
-        resp = model.generate_content('Say hello in one word.')
-        results['generation_ok'] = True
-        results['generation_response'] = resp.text[:100]
-    except Exception as e:
-        results['generation_ok'] = False
-        results['generation_error'] = traceback.format_exc()
+    if api_key:
+        try:
+            client = genai.Client(api_key=api_key)
+            resp = client.models.generate_content(
+                model=model_name,
+                contents='Say hello in one word.',
+                config=types.GenerateContentConfig(max_output_tokens=20),
+            )
+            results['generation_ok'] = True
+            results['generation_response'] = resp.text[:100]
+        except Exception as e:
+            results['generation_ok'] = False
+            results['generation_error'] = traceback.format_exc()
 
     try:
-        import requests as req
         headers = {'User-Agent': 'Mozilla/5.0 Chrome/120.0.0.0'}
-        r = req.get("https://www.bing.com/news/search?q=India+Supreme+Court&format=rss&count=3&mkt=en-IN",
-                     headers=headers, timeout=10)
-        import feedparser
+        r = req.get(
+            "https://www.bing.com/news/search?q=India+Supreme+Court&format=rss&count=3&mkt=en-IN",
+            headers=headers, timeout=10,
+        )
         feed = feedparser.parse(r.text)
         results['bing_ok'] = True
         results['bing_entries'] = len(feed.entries)
     except Exception as e:
         results['bing_ok'] = False
         results['bing_error'] = str(e)
+
+    try:
+        r2 = req.get("https://indiankanoon.org/search/?formInput=supreme+court", headers=headers, timeout=10)
+        results['indiankanoon_ok'] = r2.status_code == 200
+    except Exception as e:
+        results['indiankanoon_ok'] = False
+        results['indiankanoon_error'] = str(e)
 
     return jsonify(results)
