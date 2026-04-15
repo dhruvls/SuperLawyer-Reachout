@@ -20,7 +20,7 @@ services:
       - key: GOOGLE_AI_API_KEY
         sync: false
       - key: GEMMA_MODEL
-        value: gemini-2.0-flash-lite
+        value: gemma-4-31b-it
       - key: SMTP_SERVER
         sync: false
       - key: SMTP_PORT
