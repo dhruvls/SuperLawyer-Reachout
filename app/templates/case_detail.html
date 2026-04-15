@@ -152,6 +152,8 @@
             </div>
             <div class="card-body">
                 {% for lawyer in case.lawyers %}
+                {% set role_lower = (lawyer.role or '')|lower %}
+                {% if 'party in case' not in role_lower and 'party to case' not in role_lower and 'litigant' not in role_lower %}
                 <div class="lawyer-card mb-3 p-3 rounded">
                     <div class="d-flex align-items-center gap-2 mb-1">
                         <h6 class="mb-0">{{ lawyer.name }}</h6>
@@ -295,6 +297,7 @@
                         {% endif %}
                     </div>
                 </div>
+                {% endif %}
                 {% else %}
                 <p class="text-muted text-center">No lawyers identified.</p>
                 {% endfor %}

@@ -78,6 +78,31 @@ NAME_BLOCKLIST = {
     'bench', 'division bench', 'court',
 }
 
+# Roles that identify parties/litigants, not lawyers — exclude from lawyer list
+PARTY_ROLE_FRAGMENTS = {
+    'party in case', 'party to case', 'litigant', 'petitioner',
+    'respondent', 'appellant', 'plaintiff', 'defendant', 'accused',
+    'complainant', 'claimant',
+}
+
+
+def _is_party_role(role: str) -> bool:
+    """Return True if role indicates a litigant/party rather than a lawyer."""
+    if not role:
+        return False
+    r = role.lower().strip()
+    return any(p in r for p in PARTY_ROLE_FRAGMENTS)
+
+
+# Patterns in article titles that suggest analysis/opinion pieces, not court cases
+ARTICLE_TITLE_PATTERNS = [
+    r'\bbalancing\b', r'\bexplainer\b', r'\banalysis\b', r'\bperspective\b',
+    r'\boverview\b', r'\bguide\b', r'\bimplications of\b', r'\brealities\b',
+    r'\blandscape\b', r'\bframework\b', r'\breform\b', r'\bchallenges\b',
+    r'\bintersection of\b', r'\brole of\b', r'\bevolution of\b',
+]
+_ARTICLE_RE = re.compile('|'.join(ARTICLE_TITLE_PATTERNS), re.IGNORECASE)
+
 # ── Fast keyword filter sets ─────────────────────────────────────────────────
 
 # Strong proceeding indicators — any one of these strongly suggests a real case
@@ -201,7 +226,9 @@ def _fetch_articles() -> list:
 def _fast_keyword_filter(articles: list) -> list:
     """
     Remove obvious non-cases without any API call.
-    Rule: must have (a) strong proceeding keyword, OR (b) court keyword + weak proceeding keyword.
+    Rules (must pass ALL):
+      (a) strong proceeding keyword OR (court keyword + weak proceeding keyword)
+      (b) title does NOT look like an analysis/opinion article
     """
     kept = []
     for a in articles:
@@ -209,8 +236,21 @@ def _fast_keyword_filter(articles: list) -> list:
         has_proceeding = any(kw in t for kw in PROCEEDING_KEYWORDS)
         has_court = any(kw in t for kw in COURT_KEYWORDS)
         has_weak = any(kw in t for kw in WEAK_PROCEEDING)
-        if has_proceeding or (has_court and has_weak):
-            kept.append(a)
+
+        # Rule (a): must have case-like keywords
+        if not has_proceeding and not (has_court and has_weak):
+            continue
+
+        # Rule (b): reject titles that look like explainer / analysis articles
+        # A title with a colon AND an analysis-word is almost always an article
+        has_colon = ':' in a['title']
+        has_article_word = bool(_ARTICLE_RE.search(a['title']))
+        if has_colon and has_article_word:
+            current_app.logger.info(f"[FILTER] Article-style title rejected: {a['title'][:80]}")
+            continue
+
+        kept.append(a)
+
     current_app.logger.info(
         f"[FILTER] {len(kept)}/{len(articles)} passed keyword filter"
     )
@@ -347,6 +387,10 @@ def _cross_verify(ai_lawyers: list, bing_lawyers: list, ik_lawyers: list) -> lis
             return
         norm = _normalize_name(name)
         if norm in NAME_BLOCKLIST or name.lower() in ('unknown', 'n/a', 'not mentioned', 'unnamed'):
+            return
+        # Reject parties/litigants — only keep actual lawyers/advocates
+        if _is_party_role(role):
+            current_app.logger.info(f"[VERIFY] Skipping party (not a lawyer): {name} [{role}]")
             return
         for existing in master:
             if _names_match(existing['name'], name):
