@@ -115,11 +115,7 @@ Title: {title}
 Article:
 {article_text[:4000]}"""
 
-    try:
-        raw = _generate(prompt)
-    except Exception as e:
-        current_app.logger.error(f"[AI] analyze_case failed: {e}")
-        return None
+    raw = _generate(prompt)   # exceptions propagate — let tracker.py log them
     if not raw:
         return None
 

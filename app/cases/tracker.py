@@ -132,7 +132,7 @@ WEAK_PROCEEDING = {
 
 # ── Stage 1: Article fetching ────────────────────────────────────────────────
 
-def _fetch_rss(feed_url: str, source_name: str, days: int = 15) -> list:
+def _fetch_rss(feed_url: str, source_name: str, days: int = 7) -> list:
     try:
         resp = requests.get(feed_url, headers=HEADERS, timeout=15)
         feed = feedparser.parse(resp.text)
@@ -140,11 +140,12 @@ def _fetch_rss(feed_url: str, source_name: str, days: int = 15) -> list:
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         articles = []
         for entry in feed.entries[:20]:
-            published = None
-            if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-                if published < cutoff:
-                    continue
+            # Require a published date — skip undated entries (often stale/old)
+            if not (hasattr(entry, 'published_parsed') and entry.published_parsed):
+                continue
+            published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+            if published < cutoff:
+                continue
             title = entry.get('title', '').strip()
             link = entry.get('link', '').strip()
             if title and link:
@@ -156,7 +157,7 @@ def _fetch_rss(feed_url: str, source_name: str, days: int = 15) -> list:
         return []
 
 
-def _fetch_bing(query: str, source_name: str | None = None, days: int = 15) -> list:
+def _fetch_bing(query: str, source_name: str | None = None, days: int = 7) -> list:
     encoded = quote_plus(query)
     url = f"https://www.bing.com/news/search?q={encoded}&format=rss&count=10&mkt=en-IN"
     try:
@@ -165,11 +166,12 @@ def _fetch_bing(query: str, source_name: str | None = None, days: int = 15) -> l
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         articles = []
         for entry in feed.entries[:10]:
-            published = None
-            if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-                if published < cutoff:
-                    continue
+            # Require a published date — skip undated entries
+            if not (hasattr(entry, 'published_parsed') and entry.published_parsed):
+                continue
+            published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
+            if published < cutoff:
+                continue
             entry_url = entry.get('link', '')
             if source_name:
                 src = source_name
@@ -745,6 +747,8 @@ def scan_for_cases(progress_cb=None) -> dict:
     if not articles:
         log("  ⚠ No articles passed filter — check RSS feeds or broaden keywords")
 
+    seen_in_scan: set = set()   # within-batch dedup (same title from multiple sources)
+
     for article in articles:
         if summary['new_cases'] >= MAX_NEW_CASES:
             log(f"  Reached {MAX_NEW_CASES} cases limit — stopping.")
@@ -753,11 +757,13 @@ def scan_for_cases(progress_cb=None) -> dict:
         title = article['title'].strip()
         source_url = article['url'].strip()
 
-        # Stage 3: Deduplicate
-        if not title or _is_duplicate(title, source_url):
+        # Stage 3: Deduplicate (DB + within-batch)
+        title_key = title[:60].lower()
+        if not title or title_key in seen_in_scan or _is_duplicate(title, source_url):
             summary['skipped_duplicates'] += 1
             log(f"  [dup] {title[:70]}")
             continue
+        seen_in_scan.add(title_key)
 
         try:
             # Stage 4a: Scrape article text
