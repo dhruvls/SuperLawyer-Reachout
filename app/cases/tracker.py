@@ -319,66 +319,146 @@ def _names_match(n1: str, n2: str) -> bool:
 def _extract_names_regex(text: str) -> list:
     """Fast regex extraction of lawyer names from legal text."""
     patterns = [
+        # "Advocate Name" / "Senior Advocate Name"
         r"(?:Senior\s+)?Advocate\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+        # "Adv. Name"
         r"Adv\.?\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+        # "represented/appearing/argued by [Senior] [Advocate] Name"
         r"(?:represented|appearing|argued)\s+(?:by\s+)?(?:Senior\s+)?(?:Advocate\s+)?"
         r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+        # "Solicitor General / ASG / Attorney General Name"
         r"(?:Solicitor\s+General|Additional\s+Solicitor\s+General|ASG|Attorney\s+General)\s+"
         r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+        # "counsel for petitioner/respondent: Name"
         r"(?:counsel\s+for\s+(?:the\s+)?(?:petitioner|respondent|appellant|defendant)s?)"
         r"\s*[:\-]?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+        # "For Petitioner/Respondent: [Sr.] Adv. Name" (common in IndianKanoon docs)
+        r"For\s+(?:the\s+)?(?:Petitioner|Respondent|Appellant|Defendant|Plaintiff|"
+        r"Prosecution|State|Union|Company)s?\s*[:\-]\s*(?:Senior\s+)?(?:Advocate|Adv\.?)?\s*"
+        r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+        # "Mr./Ms./Smt. Name, [Senior] Advocate"
+        r"(?:Mr\.|Ms\.|Smt\.)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s*,?\s*"
+        r"(?:Senior\s+)?Advocate",
+        # "Name, Senior Advocate" (name before title)
+        r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\s*,\s*(?:Senior\s+Advocate|Sr\.\s*Advocate)",
+        # "amicus curiae: Name"
+        r"(?:amicus\s+curiae|amicus)\s*[:\-]?\s*(?:Senior\s+)?(?:Advocate\s+)?"
+        r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
+        # "learned counsel Name" / "learned senior counsel Name"
+        r"learned\s+(?:senior\s+)?counsel\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})",
     ]
+    seen: set = set()
     names = []
     for pattern in patterns:
-        for m in re.findall(pattern, text):
+        for m in re.findall(pattern, text, re.IGNORECASE):
             name = m.strip()
-            if len(name) > 3 and _normalize_name(name) not in NAME_BLOCKLIST:
+            norm = _normalize_name(name)
+            if len(name) > 3 and norm not in NAME_BLOCKLIST and norm not in seen:
+                seen.add(norm)
                 names.append(name)
     return names
 
 
-def _search_bing_lawyers(case_title: str) -> list:
-    """Bing web search for lawyers in a case, pass snippets to AI."""
-    query = f'"{case_title}" advocate "senior advocate" India'
-    encoded = quote_plus(query)
-    url = f"https://www.bing.com/search?q={encoded}&count=5&mkt=en-IN"
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=10)
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        snippets = [r.get_text(' ', strip=True) for r in soup.select('.b_algo')]
-        snippet_text = ' '.join(snippets)[:3000]
-        if not snippet_text.strip():
-            return []
-        return identify_lawyers_from_search(case_title, snippet_text)
-    except Exception as e:
-        current_app.logger.error(f"[BING_LAWYER] {case_title[:40]}: {e}")
+def _extract_from_article(article_text: str) -> list:
+    """Extract lawyer names directly from article text via regex (4th source)."""
+    return [
+        {'name': n, 'firm': '', 'role': '', 'source': 'article_regex'}
+        for n in _extract_names_regex(article_text)
+    ]
+
+
+def _search_bing_lawyers(case_title: str, case_name: str = '') -> list:
+    """Bing web search for lawyers in a case, pass snippets to AI.
+
+    Tries two queries:
+      1. Shortened case title with advocate keywords
+      2. Party v. Party format (if extracted by AI) — often more findable
+    """
+    # Use party names (e.g. "State v. Sharma") if available, else shortened title
+    short_title = (case_name or case_title)[:70]
+    queries = [
+        f'{short_title} advocate OR "senior advocate" India',
+        f'"{short_title}" lawyer OR counsel court India',
+    ]
+
+    all_snippets: list[str] = []
+    for query in queries:
+        encoded = quote_plus(query)
+        url = f"https://www.bing.com/search?q={encoded}&count=5&mkt=en-IN"
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=10)
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            snippets = [r.get_text(' ', strip=True) for r in soup.select('.b_algo')]
+            all_snippets.extend(snippets)
+            if len(all_snippets) >= 5:
+                break
+        except Exception as e:
+            current_app.logger.error(f"[BING_LAWYER] {query[:50]}: {e}")
+
+    snippet_text = ' '.join(all_snippets)[:3000]
+    if not snippet_text.strip():
         return []
+    return identify_lawyers_from_search(case_title, snippet_text)
 
 
 def _search_indiankanoon(case_title: str) -> list:
-    """Search IndianKanoon for advocate names in a case."""
+    """Search IndianKanoon and scrape the top case document for advocate names."""
     encoded = quote_plus(case_title)
-    url = f"https://indiankanoon.org/search/?formInput={encoded}"
-    lawyers = []
+    search_url = f"https://indiankanoon.org/search/?formInput={encoded}&pagenum=0"
+    lawyers: list = []
+    seen_names: set = set()
+
+    def _add_names(text_block: str):
+        for name in _extract_names_regex(text_block):
+            norm = _normalize_name(name)
+            if norm not in seen_names:
+                seen_names.add(norm)
+                lawyers.append({'name': name, 'source': 'IndianKanoon'})
+
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=10)
+        resp = requests.get(search_url, headers=HEADERS, timeout=12)
         soup = BeautifulSoup(resp.text, 'html.parser')
-        results = soup.select('.result, .result_title, .snippet')
-        text = ' '.join(r.get_text(' ', strip=True) for r in results[:8])
-        if not text:
-            text = soup.get_text(' ', strip=True)[:5000]
-        for name in _extract_names_regex(text):
-            lawyers.append({'name': name, 'source': 'IndianKanoon'})
-        current_app.logger.info(f"[IK] '{case_title[:40]}': {len(lawyers)} names")
+
+        # Follow the first case document link — these pages have structured
+        # "For Petitioner: Adv. X" sections that regex catches well
+        doc_link = None
+        for a in soup.select('.result_title a, a[href]'):
+            href = a.get('href', '')
+            if re.match(r'^/doc/\d+', href):
+                doc_link = 'https://indiankanoon.org' + href
+                break
+
+        if doc_link:
+            try:
+                doc_resp = requests.get(doc_link, headers=HEADERS, timeout=12)
+                doc_soup = BeautifulSoup(doc_resp.text, 'html.parser')
+                # The preamble section (first ~3000 chars) holds advocate listings
+                doc_text = doc_soup.get_text(' ', strip=True)
+                _add_names(doc_text[:6000])
+                current_app.logger.info(
+                    f"[IK DOC] {doc_link[-30:]}: {len(lawyers)} names so far"
+                )
+            except Exception as e:
+                current_app.logger.error(f"[IK DOC] {e}")
+
+        # Also mine the search snippet text as a fallback
+        snippets = soup.select('.result, .result_title, .snippet')
+        snippet_text = ' '.join(s.get_text(' ', strip=True) for s in snippets[:8])
+        _add_names(snippet_text)
+
+        current_app.logger.info(f"[IK] '{case_title[:40]}': {len(lawyers)} names total")
     except Exception as e:
         current_app.logger.error(f"[IK] {case_title[:40]}: {e}")
     return lawyers
 
 
-def _cross_verify(ai_lawyers: list, bing_lawyers: list, ik_lawyers: list) -> list:
+def _cross_verify(ai_lawyers: list, bing_lawyers: list, ik_lawyers: list,
+                   article_lawyers: list | None = None) -> list:
     """
-    Merge lawyer lists from 3 sources, assign confidence scores.
-    Confidence:  3+ sources → 0.9 | 2 sources → 0.7 | 1 source → 0.4
+    Merge lawyer lists from up to 4 sources, assign confidence scores.
+
+    Sources: ai_analysis | bing_search | indiankanoon | article_regex
+    Confidence: 3+ distinct sources → 0.9 | 2 sources → 0.7 | 1 source → 0.4
     """
     master: list = []
 
@@ -388,9 +468,8 @@ def _cross_verify(ai_lawyers: list, bing_lawyers: list, ik_lawyers: list) -> lis
         norm = _normalize_name(name)
         if norm in NAME_BLOCKLIST or name.lower() in ('unknown', 'n/a', 'not mentioned', 'unnamed'):
             return
-        # Reject parties/litigants — only keep actual lawyers/advocates
         if _is_party_role(role):
-            current_app.logger.info(f"[VERIFY] Skipping party (not a lawyer): {name} [{role}]")
+            current_app.logger.info(f"[VERIFY] Skipping party: {name} [{role}]")
             return
         for existing in master:
             if _names_match(existing['name'], name):
@@ -413,6 +492,9 @@ def _cross_verify(ai_lawyers: list, bing_lawyers: list, ik_lawyers: list) -> lis
              'bing_search', 'Bing + AI extraction')
     for l in ik_lawyers:
         _add(l.get('name', ''), '', '', 'indiankanoon', 'IndianKanoon.org')
+    for l in (article_lawyers or []):
+        _add(l.get('name', ''), l.get('firm', ''), l.get('role', ''),
+             'article_regex', 'Regex from article text')
 
     for entry in master:
         n = len(set(s['type'] for s in entry['sources']))
@@ -427,11 +509,17 @@ def _cross_verify(ai_lawyers: list, bing_lawyers: list, ik_lawyers: list) -> lis
     return master
 
 
-def _multi_source_lawyers(case_title: str, ai_lawyers: list) -> list:
-    """Orchestrate 3-source lawyer discovery and cross-verification."""
-    bing_lawyers = _search_bing_lawyers(case_title)
+def _multi_source_lawyers(case_title: str, ai_lawyers: list,
+                           article_text: str = '', case_name: str = '') -> list:
+    """Orchestrate 4-source lawyer discovery and cross-verification."""
+    article_lawyers = _extract_from_article(article_text) if article_text else []
+    bing_lawyers = _search_bing_lawyers(case_title, case_name=case_name)
     ik_lawyers = _search_indiankanoon(case_title)
-    return _cross_verify(ai_lawyers, bing_lawyers, ik_lawyers)
+    current_app.logger.info(
+        f"[LAWYERS] ai={len(ai_lawyers)} article_regex={len(article_lawyers)} "
+        f"bing={len(bing_lawyers)} ik={len(ik_lawyers)}"
+    )
+    return _cross_verify(ai_lawyers, bing_lawyers, ik_lawyers, article_lawyers)
 
 
 # ── Stage 6: Contact discovery ────────────────────────────────────────────────
@@ -681,8 +769,12 @@ def scan_for_cases() -> dict:
             summary['valid_cases'] += 1
 
             # Stage 5: Multi-source lawyer enrichment
+            # Pass article_text (4th source: regex) + case_name (better Bing query)
             current_app.logger.info(f"[LAWYERS] Multi-source for: {title[:60]}")
-            verified_lawyers = _multi_source_lawyers(title, ai_lawyers)
+            case_name = analysis.get('case_name', '')
+            verified_lawyers = _multi_source_lawyers(
+                title, ai_lawyers, article_text=article_text, case_name=case_name
+            )
 
             if not verified_lawyers:
                 current_app.logger.info(f"[SKIP] All lawyers filtered out: {title[:60]}")
