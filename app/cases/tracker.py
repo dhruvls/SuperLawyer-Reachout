@@ -687,9 +687,12 @@ def _compute_trending_score(analysis: dict) -> float:
 
 # ── Main scan entry point ─────────────────────────────────────────────────────
 
-def scan_for_cases() -> dict:
+def scan_for_cases(progress_cb=None) -> dict:
     """
     Run the full discovery pipeline.
+
+    progress_cb: optional callable(str) — receives human-readable log lines
+                 in real-time (used to stream logs to the UI).
 
     Returns a summary dict:
       {
@@ -704,6 +707,15 @@ def scan_for_cases() -> dict:
         'lawyers_with_email': int,
       }
     """
+
+    def log(msg: str):
+        current_app.logger.info(msg)
+        if progress_cb:
+            try:
+                progress_cb(msg)
+            except Exception:
+                pass
+
     summary = {
         'articles_found': 0,
         'passed_filter': 0,
@@ -715,18 +727,27 @@ def scan_for_cases() -> dict:
         'lawyers_found': 0,
         'lawyers_with_email': 0,
     }
-    current_app.logger.info("=== SCAN START ===")
+
+    log("━━━ SCAN START ━━━")
 
     # Stage 1: Fetch
+    log("Stage 1 — Fetching articles from RSS + Bing...")
     articles = _fetch_articles()
     summary['articles_found'] = len(articles)
+    log(f"  Found {len(articles)} articles total")
 
     # Stage 2: Fast filter
+    log("Stage 2 — Keyword filter (no API)...")
     articles = _fast_keyword_filter(articles)
     summary['passed_filter'] = len(articles)
+    log(f"  {len(articles)} articles passed the case-keyword filter")
+
+    if not articles:
+        log("  ⚠ No articles passed filter — check RSS feeds or broaden keywords")
 
     for article in articles:
         if summary['new_cases'] >= MAX_NEW_CASES:
+            log(f"  Reached {MAX_NEW_CASES} cases limit — stopping.")
             break
 
         title = article['title'].strip()
@@ -735,49 +756,60 @@ def scan_for_cases() -> dict:
         # Stage 3: Deduplicate
         if not title or _is_duplicate(title, source_url):
             summary['skipped_duplicates'] += 1
+            log(f"  [dup] {title[:70]}")
             continue
 
         try:
             # Stage 4a: Scrape article text
             article_text = _fetch_article_text(source_url)
             if len(article_text) < 80:
-                current_app.logger.info(f"[SKIP] Too short: {title[:60]}")
+                log(f"  [skip — too short] {title[:70]}")
                 summary['skipped_not_case'] += 1
                 continue
 
             # Stage 4b: AI validation
-            current_app.logger.info(f"[AI] Validating: {title[:60]}")
+            log(f"🔍 AI analyzing: {title[:65]}...")
             analysis = analyze_case(title, article_text)
 
             if analysis is None:
-                # AI unavailable — skip rather than save unvalidated content
-                current_app.logger.warning(f"[SKIP] AI unavailable: {title[:60]}")
+                log(f"  ✗ AI unavailable — skipped")
                 summary['skipped_not_case'] += 1
                 continue
 
-            if not analysis.get('is_case', False):
-                current_app.logger.info(f"[SKIP] Not a case: {title[:60]}")
-                summary['skipped_not_case'] += 1
-                continue
-
+            is_case = analysis.get('is_case', False)
+            case_name = analysis.get('case_name', '').strip()
+            court = analysis.get('court', '')
+            practice = analysis.get('practice_area', '')
             ai_lawyers = analysis.get('lawyers', [])
+            score = analysis.get('trending_score', 0)
+
+            if not is_case:
+                log(f"  ✗ Not a case — skipped")
+                summary['skipped_not_case'] += 1
+                continue
+
+            log(f"  ✓ Valid case: {case_name or title[:55]}")
+            log(f"    Court: {court or 'unknown'}  |  Area: {practice}  |  Score: {score:.2f}")
+            log(f"    AI found {len(ai_lawyers)} lawyer(s): "
+                + ', '.join(l.get('name','?') for l in ai_lawyers[:5]))
+
             if not ai_lawyers:
-                current_app.logger.info(f"[SKIP] No lawyers found: {title[:60]}")
+                log(f"  ✗ No lawyers found by AI — skipped")
                 summary['skipped_no_lawyers'] += 1
                 continue
 
             summary['valid_cases'] += 1
 
             # Stage 5: Multi-source lawyer enrichment
-            # Pass article_text (4th source: regex) + case_name (better Bing query)
-            current_app.logger.info(f"[LAWYERS] Multi-source for: {title[:60]}")
-            case_name = analysis.get('case_name', '')
+            log(f"  👤 Multi-source lawyer discovery...")
             verified_lawyers = _multi_source_lawyers(
                 title, ai_lawyers, article_text=article_text, case_name=case_name
             )
+            log(f"    → {len(verified_lawyers)} unique lawyers "
+                f"({sum(1 for l in verified_lawyers if l['verified'])} verified)")
 
             if not verified_lawyers:
-                current_app.logger.info(f"[SKIP] All lawyers filtered out: {title[:60]}")
+                log(f"  ✗ All lawyers filtered out — skipped")
                 summary['skipped_no_lawyers'] += 1
                 continue
 
@@ -789,10 +821,12 @@ def scan_for_cases() -> dict:
                 if not name:
                     continue
 
-                current_app.logger.info(
-                    f"[CONTACT] {name} conf={vl['confidence']:.1f}"
-                )
+                log(f"    🔎 Contact search: {name} (conf={vl['confidence']:.1f})")
                 email, linkedin, email_src = _discover_contacts(name, firm)
+                if email:
+                    log(f"      ✉ Email: {email} [{email_src}]")
+                if linkedin:
+                    log(f"      🔗 LinkedIn found")
 
                 lawyer_objects.append(Lawyer(
                     name=name,
@@ -810,9 +844,9 @@ def scan_for_cases() -> dict:
                     summary['lawyers_with_email'] += 1
 
             # Stage 7: Save to DB
-            case_name = analysis.get('case_name', '').strip()
+            saved_title = case_name or title
             case = LegalCase(
-                title=case_name or title,
+                title=saved_title,
                 summary=analysis.get('summary', article_text[:300]),
                 source_url=source_url,
                 source_name=article['source'],
@@ -827,21 +861,18 @@ def scan_for_cases() -> dict:
             db.session.add(case)
             db.session.commit()
             summary['new_cases'] += 1
-            current_app.logger.info(
-                f"[SAVED] {title[:60]} | {len(lawyer_objects)} lawyers | "
-                f"score={case.trending_score}"
-            )
+            log(f"  ✅ Saved: {saved_title[:60]} — {len(lawyer_objects)} lawyers")
 
         except Exception as e:
             current_app.logger.error(f"[ERROR] '{title[:50]}': {e}")
+            log(f"  ❌ Error: {e}")
             db.session.rollback()
             continue
 
-    current_app.logger.info(
-        f"=== SCAN DONE: {summary['new_cases']} new cases, "
-        f"{summary['lawyers_found']} lawyers, "
-        f"{summary['lawyers_with_email']} with email ==="
-    )
+    log(f"━━━ DONE: {summary['new_cases']} cases · "
+        f"{summary['lawyers_found']} lawyers · "
+        f"{summary['lawyers_with_email']} with email · "
+        f"{summary['skipped_not_case']} filtered ━━━")
     return summary
 
 

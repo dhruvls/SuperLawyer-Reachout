@@ -20,6 +20,7 @@ _scan_state: dict = {
     'finished_at': None,
     'result': None,   # summary dict from scan_for_cases()
     'error': None,
+    'logs': [],       # real-time log lines streamed to the UI
 }
 _scan_lock = threading.Lock()
 
@@ -267,10 +268,17 @@ def _run_scan_in_background(app):
     """Clear old cases/lawyers, then run scan_for_cases() fresh."""
     global _scan_state
     with app.app_context():
+
+        def _log(msg: str):
+            """Append a line to the live scan log and also write to Flask logger."""
+            with _scan_lock:
+                _scan_state['logs'].append(msg)
+            app.logger.info(f"[SCAN] {msg}")
+
         try:
             # Wipe existing cases and lawyers so scan always delivers fresh results.
-            # Null out outreach_email FKs first to avoid FK constraint violations;
-            # the email rows themselves are preserved (user work).
+            # Null out outreach_email FKs first to avoid FK constraint violations.
+            _log("Clearing old cases and lawyers...")
             from sqlalchemy import text as sa_text
             db.session.execute(sa_text(
                 "UPDATE outreach_email SET lawyer_id = NULL, case_id = NULL"
@@ -279,9 +287,9 @@ def _run_scan_in_background(app):
             Lawyer.query.delete()
             LegalCase.query.delete()
             db.session.commit()
-            app.logger.info("[SCAN] Cleared old cases and lawyers before fresh scan.")
+            _log("Old data cleared. Starting fresh discovery...")
 
-            summary = scan_for_cases()
+            summary = scan_for_cases(progress_cb=_log)
             with _scan_lock:
                 _scan_state['running'] = False
                 _scan_state['finished_at'] = datetime.now(timezone.utc).isoformat()
@@ -293,6 +301,7 @@ def _run_scan_in_background(app):
                 _scan_state['running'] = False
                 _scan_state['finished_at'] = datetime.now(timezone.utc).isoformat()
                 _scan_state['error'] = str(e)
+                _scan_state['logs'].append(f"ERROR: {e}")
 
 
 @cases_bp.route('/cases/scan', methods=['POST'])
@@ -311,6 +320,7 @@ def trigger_scan():
         _scan_state['finished_at'] = None
         _scan_state['result'] = None
         _scan_state['error'] = None
+        _scan_state['logs'] = []
 
     thread = threading.Thread(
         target=_run_scan_in_background,

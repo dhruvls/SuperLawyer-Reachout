@@ -2,16 +2,20 @@
 {% block title %}Cases - Super Lawyer Reachout{% endblock %}
 {% block content %}
 
-<!-- Scan status banner (shown while scan is running or just finished) -->
-<div id="scan-banner" class="alert alert-info d-flex align-items-center gap-2 mb-3" style="display:none!important;">
-    <span id="scan-spinner" class="spinner-border spinner-border-sm" role="status"></span>
-    <span id="scan-banner-text">Scanning for new cases...</span>
-    <button type="button" class="btn-close ms-auto" onclick="document.getElementById('scan-banner').style.display='none'"></button>
-</div>
-<div id="scan-result-banner" class="alert alert-success d-flex align-items-center gap-2 mb-3" style="display:none;">
-    <i class="bi bi-check-circle-fill"></i>
-    <span id="scan-result-text"></span>
-    <button type="button" class="btn-close ms-auto" onclick="document.getElementById('scan-result-banner').style.display='none'"></button>
+<!-- Scan live-log panel (visible while running or just finished) -->
+<div id="scan-panel" style="display:none;" class="mb-3">
+    <div class="card border-0 shadow-sm">
+        <div class="card-header bg-dark text-white d-flex align-items-center gap-2 py-2">
+            <span id="scan-spinner" class="spinner-border spinner-border-sm text-light" role="status"></span>
+            <span id="scan-panel-title" class="fw-semibold small">Scanning for cases...</span>
+            <button type="button" class="btn-close btn-close-white ms-auto" onclick="document.getElementById('scan-panel').style.display='none'"></button>
+        </div>
+        <div id="scan-log-box"
+             style="background:#0d1117; color:#c9d1d9; font-family:monospace; font-size:.78rem;
+                    height:260px; overflow-y:auto; padding:10px 14px; white-space:pre-wrap;">
+        </div>
+        <div id="scan-result-footer" class="card-footer d-none"></div>
+    </div>
 </div>
 
 <div class="d-flex justify-content-between align-items-center mb-4">
@@ -150,32 +154,64 @@
 
 <script>
 let _scanPollInterval = null;
+let _lastLogCount = 0;
+
+function _colorLine(line) {
+    if (line.startsWith('✅') || line.startsWith('✓')) return `<span style="color:#3fb950">${line}</span>`;
+    if (line.startsWith('✗') || line.startsWith('❌')) return `<span style="color:#f85149">${line}</span>`;
+    if (line.startsWith('⚠')) return `<span style="color:#d29922">${line}</span>`;
+    if (line.startsWith('🔍')) return `<span style="color:#79c0ff">${line}</span>`;
+    if (line.startsWith('👤') || line.startsWith('🔎')) return `<span style="color:#bc8cff">${line}</span>`;
+    if (line.startsWith('✉')) return `<span style="color:#56d364">${line}</span>`;
+    if (line.startsWith('━')) return `<span style="color:#58a6ff;font-weight:bold">${line}</span>`;
+    if (line.startsWith('  ✓') || line.includes('Saved')) return `<span style="color:#3fb950">${line}</span>`;
+    if (line.startsWith('  ✗') || line.startsWith('  [skip') || line.startsWith('  [dup')) return `<span style="color:#8b949e">${line}</span>`;
+    if (line.startsWith('ERROR')) return `<span style="color:#f85149;font-weight:bold">${line}</span>`;
+    return line;
+}
+
+function _appendLogs(lines) {
+    const box = document.getElementById('scan-log-box');
+    lines.forEach(line => {
+        box.innerHTML += _colorLine(line) + '\n';
+    });
+    box.scrollTop = box.scrollHeight;
+}
+
+function _showPanel() {
+    const panel = document.getElementById('scan-panel');
+    panel.style.display = '';
+}
 
 function startScan() {
     const btn = document.getElementById('scan-btn');
-    const banner = document.getElementById('scan-banner');
     const spinner = document.getElementById('scan-spinner');
-    const bannerText = document.getElementById('scan-banner-text');
+    const title = document.getElementById('scan-panel-title');
+    const logBox = document.getElementById('scan-log-box');
+    const footer = document.getElementById('scan-result-footer');
 
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Scanning...';
-    banner.style.display = 'flex';
+    logBox.innerHTML = '';
+    footer.className = 'card-footer d-none';
+    _lastLogCount = 0;
     spinner.style.display = '';
-    bannerText.textContent = 'Scanning for new cases... this may take a few minutes.';
+    title.textContent = 'Scanning for cases... (this may take a few minutes)';
+    _showPanel();
 
     fetch("{{ url_for('cases.trigger_scan') }}", {
         method: 'POST',
-        headers: { 'Accept': 'application/json', 'X-CSRFToken': '' }
+        headers: { 'Accept': 'application/json' }
     })
     .then(r => r.json())
     .then(data => {
         if (data.status === 'already_running') {
-            bannerText.textContent = 'A scan is already running. Waiting for it to finish...';
+            title.textContent = 'Scan already running — showing live progress...';
         }
-        _scanPollInterval = setInterval(pollScanStatus, 4000);
+        _scanPollInterval = setInterval(pollScanStatus, 3000);
     })
     .catch(() => {
-        bannerText.textContent = 'Could not start scan. Check your connection.';
+        title.textContent = 'Could not start scan. Check your connection.';
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-search"></i> Scan for New Cases';
     });
@@ -185,52 +221,62 @@ function pollScanStatus() {
     fetch("{{ url_for('cases.scan_status') }}")
     .then(r => r.json())
     .then(state => {
+        // Stream new log lines
+        const logs = state.logs || [];
+        if (logs.length > _lastLogCount) {
+            _appendLogs(logs.slice(_lastLogCount));
+            _lastLogCount = logs.length;
+        }
+
         if (!state.running && (state.result !== null || state.error !== null)) {
             clearInterval(_scanPollInterval);
             _scanPollInterval = null;
 
             const btn = document.getElementById('scan-btn');
-            const banner = document.getElementById('scan-banner');
-            const resultBanner = document.getElementById('scan-result-banner');
-            const resultText = document.getElementById('scan-result-text');
+            const spinner = document.getElementById('scan-spinner');
+            const title = document.getElementById('scan-panel-title');
+            const footer = document.getElementById('scan-result-footer');
 
-            banner.style.display = 'none';
+            spinner.style.display = 'none';
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-search"></i> Scan for New Cases';
 
             if (state.error) {
-                resultBanner.classList.replace('alert-success', 'alert-danger');
-                resultText.textContent = 'Scan failed: ' + state.error;
+                title.textContent = 'Scan failed';
+                footer.className = 'card-footer bg-danger-subtle text-danger small';
+                footer.textContent = 'Error: ' + state.error;
             } else {
                 const r = state.result;
-                resultBanner.classList.replace('alert-danger', 'alert-success');
-                resultText.textContent =
-                    `Scan complete — ${r.new_cases} new cases added · ` +
-                    `${r.lawyers_found} lawyers identified · ` +
-                    `${r.lawyers_with_email} with email addresses ` +
-                    `(${r.skipped_not_case} non-cases filtered, ${r.skipped_duplicates} duplicates skipped)`;
+                title.textContent = 'Scan complete';
+                footer.className = 'card-footer bg-success-subtle text-success small fw-semibold';
+                footer.textContent =
+                    `${r.new_cases} cases saved · ${r.lawyers_found} lawyers · ` +
+                    `${r.lawyers_with_email} with email · ` +
+                    `${r.skipped_not_case} filtered out`;
             }
-            resultBanner.style.display = 'flex';
+            footer.classList.remove('d-none');
 
-            // Reload page after 2s to show new cases
-            if (!state.error) setTimeout(() => location.reload(), 2000);
+            if (!state.error) setTimeout(() => location.reload(), 2500);
         }
     })
     .catch(() => {/* network hiccup, keep polling */});
 }
 
-// On page load: check if scan is already running (e.g. after redirect)
+// On page load: re-attach to any in-progress scan
 document.addEventListener('DOMContentLoaded', () => {
     fetch("{{ url_for('cases.scan_status') }}")
     .then(r => r.json())
     .then(state => {
-        if (state.running) {
+        if (state.running || (state.logs && state.logs.length > 0 && state.result === null)) {
             const btn = document.getElementById('scan-btn');
-            const banner = document.getElementById('scan-banner');
+            const title = document.getElementById('scan-panel-title');
             btn.disabled = true;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Scanning...';
-            banner.style.display = 'flex';
-            _scanPollInterval = setInterval(pollScanStatus, 4000);
+            title.textContent = 'Scan in progress...';
+            _showPanel();
+            _appendLogs(state.logs || []);
+            _lastLogCount = (state.logs || []).length;
+            _scanPollInterval = setInterval(pollScanStatus, 3000);
         }
     });
 });
