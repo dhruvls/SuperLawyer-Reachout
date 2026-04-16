@@ -3,7 +3,7 @@ from google import genai
 from google.genai import types
 from flask import current_app
 
-GEMMA_MODEL = 'gemma-4-31b-it'
+GEMMA_MODEL = 'models/gemma-4-31b-it'   # full model path required for grounding
 
 
 def _get_client():
@@ -16,24 +16,28 @@ def _get_client():
     return client, model
 
 
-def _generate(prompt: str) -> str | None:
+def _generate(prompt: str, grounding: bool = False) -> str | None:
+    """
+    Generate content with Gemma 4.
+    grounding=True enables Google Search so the model can look up live data.
+    """
     client, model = _get_client()
     if not client:
         current_app.logger.error("[AI] No client — GOOGLE_AI_API_KEY missing or invalid")
         return None
     try:
+        cfg_kwargs: dict = dict(temperature=0.1, max_output_tokens=4096)
+        if grounding:
+            cfg_kwargs['tools'] = [types.Tool(google_search=types.GoogleSearch())]
         response = client.models.generate_content(
             model=model,
             contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.1,
-                max_output_tokens=2048,
-            ),
+            config=types.GenerateContentConfig(**cfg_kwargs),
         )
         return response.text
     except Exception as e:
         current_app.logger.error(f"[AI] generate error (model={model}): {e}")
-        raise  # re-raise so callers can log the real error message
+        raise
 
 
 def _parse_json(text: str):
@@ -61,6 +65,115 @@ def _parse_json(text: str):
                 except json.JSONDecodeError:
                     continue
     return None
+
+
+def discover_cases_grounded() -> list:
+    """
+    Use Gemma 4 + Google Search grounding to find trending Indian legal cases
+    from the past 7 days — replaces RSS + keyword filter + AI validation in one call.
+
+    Returns a list of case dicts (same shape as analyze_case output).
+    """
+    prompt = """Search Google News India for the most recent and significant Indian legal cases
+from the past 7 days (today's context matters — use search to find current news).
+
+Focus on:
+- Supreme Court of India judgments, orders, hearings
+- High Court significant orders (Delhi, Bombay, Madras, Calcutta, etc.)
+- NCLT / NCLAT insolvency & corporate matters
+- SEBI, CCI, NGT regulatory orders
+- Notable criminal matters, bail orders, constitutional petitions
+
+For each case found, I need ONLY cases where named advocates/lawyers are mentioned.
+Extract 8-12 cases maximum.
+
+Return ONLY a JSON array, no markdown:
+[
+  {
+    "case_name": "Party A v. Party B",
+    "court": "Supreme Court of India",
+    "summary": "2-3 sentence factual summary of what happened",
+    "practice_area": "one of: constitutional/corporate/criminal/tax/ip/environmental/cyber/insolvency/banking/labour/family/real_estate/media/general",
+    "status": "pending or decided or reserved",
+    "trending_score": 0.0,
+    "source_url": "https://...",
+    "source_name": "LiveLaw or Bar and Bench or The Hindu or other",
+    "lawyers": [
+      {"name": "Full Name", "firm": "Firm name or empty", "role": "Senior Advocate / Advocate / ASG / SG", "side": "petitioner or respondent or unknown"}
+    ]
+  }
+]"""
+
+    raw = _generate(prompt, grounding=True)
+    if not raw:
+        return []
+    result = _parse_json(raw)
+    if not isinstance(result, list):
+        current_app.logger.warning("[AI] discover_cases_grounded: unexpected format")
+        return []
+    # Clean out entries without lawyers
+    return [c for c in result if isinstance(c, dict) and c.get('lawyers') and c.get('case_name')]
+
+
+def discover_lawyers_grounded(case_name: str, court: str) -> list:
+    """
+    Use Gemma 4 + Google Search to find advocates appearing in a specific case.
+    Supplements the existing multi-source lawyer discovery.
+    """
+    prompt = f"""Search Google for lawyers and advocates appearing in this Indian legal case:
+Case: "{case_name}"
+Court: {court or 'Indian court'}
+
+Find the names of Senior Advocates, Advocates, Solicitor General, ASG, or amicus curiae
+who are representing parties. Only include people whose full names appear in news or court records.
+
+Return ONLY a JSON array, no markdown:
+[{{"name": "Full Name", "firm": "Firm or empty string", "role": "Senior Advocate / Advocate / etc.", "side": "petitioner or respondent or unknown"}}]
+
+If none found, return: []"""
+
+    raw = _generate(prompt, grounding=True)
+    if not raw:
+        return []
+    result = _parse_json(raw)
+    if not isinstance(result, list):
+        return []
+    return [l for l in result if isinstance(l, dict) and l.get('name')
+            and l['name'].lower() not in ('unknown', 'n/a', '')]
+
+
+def discover_contact_grounded(name: str, firm: str) -> tuple[str | None, str | None]:
+    """
+    Use Gemma 4 + Google Search to find a lawyer's email and LinkedIn.
+    Returns (email, linkedin_url).
+    """
+    firm_str = f' at {firm}' if firm and firm.lower() not in ('', 'n/a', 'unknown firm') else ''
+    prompt = f"""Search Google for the contact information of Indian lawyer/advocate: {name}{firm_str}
+
+Look on:
+- Their law firm's website (team/contact/people page)
+- LawRato.com, AdvocateKhoj.com, JustDial lawyer profiles
+- Bar council directories
+- LinkedIn profile
+
+Return ONLY this JSON, no markdown:
+{{"email": "email@domain.com or null", "linkedin_url": "https://linkedin.com/in/... or null"}}"""
+
+    raw = _generate(prompt, grounding=True)
+    if not raw:
+        return None, None
+    result = _parse_json(raw)
+    if not isinstance(result, dict):
+        return None, None
+    email = result.get('email')
+    linkedin = result.get('linkedin_url')
+    # Validate email format
+    import re
+    if email and not re.match(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', email):
+        email = None
+    if linkedin and 'linkedin.com' not in str(linkedin):
+        linkedin = None
+    return email or None, linkedin or None
 
 
 def analyze_case(title: str, article_text: str) -> dict | None:

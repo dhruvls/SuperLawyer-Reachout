@@ -23,7 +23,9 @@ from bs4 import BeautifulSoup
 from flask import current_app
 from app import db
 from app.models import LegalCase, Lawyer
-from app.ai.gemma import analyze_case, identify_lawyers_from_search
+from app.ai.gemma import (analyze_case, identify_lawyers_from_search,
+                           discover_cases_grounded, discover_lawyers_grounded,
+                           discover_contact_grounded)
 
 
 # ── Article sources ──────────────────────────────────────────────────────────
@@ -889,33 +891,186 @@ def scan_for_cases(progress_cb=None) -> dict:
 
     log("━━━ SCAN START ━━━")
 
-    # Stage 1: Fetch
-    log("Stage 1 — Fetching articles from RSS + Bing...")
-    articles = _fetch_articles()
-    summary['articles_found'] = len(articles)
-    log(f"  Found {len(articles)} articles total")
+    # ── Stage 0: Grounded discovery (Gemma 4 + Google Search) ────────────────
+    # Ask Gemma to search Google directly for trending Indian cases.
+    # If it returns results, skip the whole RSS → scrape → filter pipeline.
+    log("Stage 0 — Grounded discovery: Gemma 4 searching Google for trending cases...")
+    grounded_cases = []
+    try:
+        grounded_cases = discover_cases_grounded()
+        log(f"  Grounded search found {len(grounded_cases)} cases")
+    except Exception as e:
+        log(f"  ⚠ Grounded search failed ({e}) — falling back to RSS pipeline")
 
-    # Stage 2: Fast filter
-    log("Stage 2 — Keyword filter (no API)...")
-    articles = _fast_keyword_filter(articles)
-    summary['passed_filter'] = len(articles)
-    log(f"  {len(articles)} articles passed the case-keyword filter")
+    use_rss_fallback = len(grounded_cases) == 0
 
-    if not articles:
-        log("  ⚠ No articles passed filter — check RSS feeds or broaden keywords")
+    if use_rss_fallback:
+        # ── Stage 1-2: RSS + Bing fallback ───────────────────────────────────
+        log("Stage 1 — Fetching articles from RSS + Bing (fallback)...")
+        articles = _fetch_articles()
+        summary['articles_found'] = len(articles)
+        log(f"  Found {len(articles)} articles total")
 
-    seen_in_scan: set = set()   # within-batch dedup (same title from multiple sources)
+        log("Stage 2 — Keyword filter (no API)...")
+        articles = _fast_keyword_filter(articles)
+        summary['passed_filter'] = len(articles)
+        log(f"  {len(articles)} articles passed the case-keyword filter")
+        if not articles:
+            log("  ⚠ No articles passed filter — check RSS feeds")
+    else:
+        summary['articles_found'] = len(grounded_cases)
+        summary['passed_filter'] = len(grounded_cases)
 
-    for article in articles:
+    # Build a unified work queue: either grounded case dicts or article dicts
+    work_queue = grounded_cases if not use_rss_fallback else []
+    rss_queue = [] if not use_rss_fallback else articles
+
+    seen_in_scan: set = set()
+
+    def _process_case(analysis: dict, source_url: str, source_name: str,
+                       published_date=None, article_text: str = ''):
+        """Common path: lawyer discovery + contact + save for one validated case."""
+        nonlocal summary
+
+        case_name = analysis.get('case_name', '').strip()
+        court = analysis.get('court', '')
+        practice = analysis.get('practice_area', '')
+        ai_lawyers = analysis.get('lawyers', [])
+        score = analysis.get('trending_score', 0)
+
+        log(f"  ✓ Valid case: {case_name[:55]}")
+        log(f"    Court: {court or 'unknown'}  |  Area: {practice}  |  Score: {score:.2f}")
+        log(f"    AI found {len(ai_lawyers)} lawyer(s): "
+            + ', '.join(l.get('name', '?') for l in ai_lawyers[:5]))
+
+        if not ai_lawyers:
+            log(f"  ✗ No lawyers — skipped")
+            summary['skipped_no_lawyers'] += 1
+            return
+
+        summary['valid_cases'] += 1
+
+        # Stage 5a: grounded lawyer enrichment (search for more lawyers for this case)
+        log(f"  👤 Grounded lawyer search for: {case_name[:50]}...")
+        try:
+            grounded_lawyers = discover_lawyers_grounded(case_name, court)
+            log(f"    Grounded search found {len(grounded_lawyers)} additional lawyers")
+        except Exception as e:
+            log(f"    ⚠ Grounded lawyer search failed: {e}")
+            grounded_lawyers = []
+
+        # Stage 5b: traditional multi-source enrichment
+        verified_lawyers = _multi_source_lawyers(
+            case_name or source_url, ai_lawyers + grounded_lawyers,
+            article_text=article_text, case_name=case_name
+        )
+        log(f"    → {len(verified_lawyers)} unique lawyers "
+            f"({sum(1 for l in verified_lawyers if l['verified'])} verified)")
+
+        if not verified_lawyers:
+            log(f"  ✗ All lawyers filtered out — skipped")
+            summary['skipped_no_lawyers'] += 1
+            return
+
+        # Stage 6: Contact discovery (grounded first, then traditional)
+        lawyer_objects = []
+        for vl in verified_lawyers:
+            name = vl.get('name', '').strip()
+            firm = vl.get('firm', '').strip()
+            if not name:
+                continue
+
+            log(f"    🔎 Contact: {name} (conf={vl['confidence']:.1f})")
+
+            # Try grounded contact discovery first
+            email, linkedin = None, None
+            try:
+                email, linkedin = discover_contact_grounded(name, firm)
+                if email:
+                    log(f"      ✉ Email via grounded search: {email}")
+            except Exception:
+                pass
+
+            # Fall back to traditional scraping if grounded found nothing
+            if not email:
+                email, linkedin_t, email_src = _discover_contacts(name, firm)
+                if not linkedin:
+                    linkedin = linkedin_t
+                if email:
+                    log(f"      ✉ Email via scraping: {email}")
+            else:
+                email_src = 'grounded_search'
+
+            if linkedin:
+                log(f"      🔗 LinkedIn found")
+
+            lawyer_objects.append(Lawyer(
+                name=name, firm=firm, role=vl.get('role', ''),
+                email=email, email_source=email_src if email else None,
+                linkedin_url=linkedin,
+                verified=vl.get('verified', False),
+                confidence_score=vl.get('confidence', 0.4),
+                verification_sources=json.dumps(vl.get('sources', [])),
+            ))
+            summary['lawyers_found'] += 1
+            if email:
+                summary['lawyers_with_email'] += 1
+
+        # Stage 7: Save
+        saved_title = case_name or source_url[:80]
+        case = LegalCase(
+            title=saved_title,
+            summary=analysis.get('summary', article_text[:300]),
+            source_url=source_url,
+            source_name=source_name,
+            published_date=published_date,
+            status='active',
+            ai_analysis=json.dumps(analysis),
+            trending_score=_compute_trending_score(analysis),
+        )
+        for lo in lawyer_objects:
+            case.lawyers.append(lo)
+        db.session.add(case)
+        db.session.commit()
+        summary['new_cases'] += 1
+        log(f"  ✅ Saved: {saved_title[:60]} — {len(lawyer_objects)} lawyers")
+
+    # ── Process grounded cases ────────────────────────────────────────────────
+    for gc in work_queue:
         if summary['new_cases'] >= MAX_NEW_CASES:
-            log(f"  Reached {MAX_NEW_CASES} cases limit — stopping.")
+            break
+        case_name = gc.get('case_name', '').strip()
+        title_key = case_name[:60].lower()
+        source_url = gc.get('source_url', '')
+
+        if not case_name or title_key in seen_in_scan or _is_duplicate(case_name, source_url):
+            summary['skipped_duplicates'] += 1
+            log(f"  [dup] {case_name[:70]}")
+            continue
+        seen_in_scan.add(title_key)
+
+        # Add is_case=True (grounded AI already validated these)
+        gc['is_case'] = True
+        try:
+            _process_case(
+                analysis=gc,
+                source_url=source_url,
+                source_name=gc.get('source_name', 'Google Search'),
+                published_date=datetime.now(timezone.utc),
+            )
+        except Exception as e:
+            log(f"  ❌ Error: {e}")
+            db.session.rollback()
+
+    # ── Process RSS fallback articles ─────────────────────────────────────────
+    for article in rss_queue:
+        if summary['new_cases'] >= MAX_NEW_CASES:
             break
 
         title = article['title'].strip()
         source_url = article['url'].strip()
-
-        # Stage 3: Deduplicate (DB + within-batch)
         title_key = title[:60].lower()
+
         if not title or title_key in seen_in_scan or _is_duplicate(title, source_url):
             summary['skipped_duplicates'] += 1
             log(f"  [dup] {title[:70]}")
@@ -923,109 +1078,32 @@ def scan_for_cases(progress_cb=None) -> dict:
         seen_in_scan.add(title_key)
 
         try:
-            # Stage 4a: Scrape article text
             article_text = _fetch_article_text(source_url)
             if len(article_text) < 80:
                 log(f"  [skip — too short] {title[:70]}")
                 summary['skipped_not_case'] += 1
                 continue
 
-            # Stage 4b: AI validation
             log(f"🔍 AI analyzing: {title[:65]}...")
             analysis = analyze_case(title, article_text)
 
             if analysis is None:
-                log(f"  ✗ AI returned no result — check GOOGLE_AI_API_KEY and model name")
+                log(f"  ✗ AI returned no result")
                 summary['skipped_not_case'] += 1
                 continue
 
-            is_case = analysis.get('is_case', False)
-            case_name = analysis.get('case_name', '').strip()
-            court = analysis.get('court', '')
-            practice = analysis.get('practice_area', '')
-            ai_lawyers = analysis.get('lawyers', [])
-            score = analysis.get('trending_score', 0)
-
-            if not is_case:
+            if not analysis.get('is_case', False):
                 log(f"  ✗ Not a case — skipped")
                 summary['skipped_not_case'] += 1
                 continue
 
-            log(f"  ✓ Valid case: {case_name or title[:55]}")
-            log(f"    Court: {court or 'unknown'}  |  Area: {practice}  |  Score: {score:.2f}")
-            log(f"    AI found {len(ai_lawyers)} lawyer(s): "
-                + ', '.join(l.get('name','?') for l in ai_lawyers[:5]))
-
-            if not ai_lawyers:
-                log(f"  ✗ No lawyers found by AI — skipped")
-                summary['skipped_no_lawyers'] += 1
-                continue
-
-            summary['valid_cases'] += 1
-
-            # Stage 5: Multi-source lawyer enrichment
-            log(f"  👤 Multi-source lawyer discovery...")
-            verified_lawyers = _multi_source_lawyers(
-                title, ai_lawyers, article_text=article_text, case_name=case_name
-            )
-            log(f"    → {len(verified_lawyers)} unique lawyers "
-                f"({sum(1 for l in verified_lawyers if l['verified'])} verified)")
-
-            if not verified_lawyers:
-                log(f"  ✗ All lawyers filtered out — skipped")
-                summary['skipped_no_lawyers'] += 1
-                continue
-
-            # Stage 6: Contact discovery
-            lawyer_objects = []
-            for vl in verified_lawyers:
-                name = vl.get('name', '').strip()
-                firm = vl.get('firm', '').strip()
-                if not name:
-                    continue
-
-                log(f"    🔎 Contact search: {name} (conf={vl['confidence']:.1f})")
-                email, linkedin, email_src = _discover_contacts(name, firm)
-                if email:
-                    log(f"      ✉ Email: {email} [{email_src}]")
-                if linkedin:
-                    log(f"      🔗 LinkedIn found")
-
-                lawyer_objects.append(Lawyer(
-                    name=name,
-                    firm=firm,
-                    role=vl.get('role', ''),
-                    email=email,
-                    email_source=email_src,
-                    linkedin_url=linkedin,
-                    verified=vl.get('verified', False),
-                    confidence_score=vl.get('confidence', 0.4),
-                    verification_sources=json.dumps(vl.get('sources', [])),
-                ))
-                summary['lawyers_found'] += 1
-                if email:
-                    summary['lawyers_with_email'] += 1
-
-            # Stage 7: Save to DB
-            saved_title = case_name or title
-            case = LegalCase(
-                title=saved_title,
-                summary=analysis.get('summary', article_text[:300]),
+            _process_case(
+                analysis=analysis,
                 source_url=source_url,
                 source_name=article['source'],
                 published_date=article.get('published'),
-                status='active',
-                ai_analysis=json.dumps(analysis),
-                trending_score=_compute_trending_score(analysis),
+                article_text=article_text,
             )
-            for lo in lawyer_objects:
-                case.lawyers.append(lo)
-
-            db.session.add(case)
-            db.session.commit()
-            summary['new_cases'] += 1
-            log(f"  ✅ Saved: {saved_title[:60]} — {len(lawyer_objects)} lawyers")
-
         except Exception as e:
             current_app.logger.error(f"[ERROR] '{title[:50]}': {e}")
             log(f"  ❌ Error: {e}")
