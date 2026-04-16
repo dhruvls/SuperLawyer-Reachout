@@ -19,8 +19,7 @@ from bs4 import BeautifulSoup
 from flask import current_app
 from app import db
 from app.models import LegalCase, Lawyer
-from app.ai.gemma import (identify_lawyers_from_search,
-                           discover_cases_grounded, discover_lawyers_grounded,
+from app.ai.gemma import (discover_cases_grounded, discover_lawyers_grounded,
                            discover_contact_grounded)
 
 
@@ -153,34 +152,6 @@ def _extract_names_regex(text: str) -> list:
     return names
 
 
-def _search_bing_lawyers(case_title: str, case_name: str = '') -> list:
-    """Bing web search for lawyers in a case, pass snippets to AI."""
-    short_title = (case_name or case_title)[:70]
-    queries = [
-        f'{short_title} advocate OR "senior advocate" India',
-        f'"{short_title}" lawyer OR counsel court India',
-    ]
-
-    all_snippets: list[str] = []
-    for query in queries:
-        encoded = quote_plus(query)
-        url = f"https://www.bing.com/search?q={encoded}&count=5&mkt=en-IN"
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=10)
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            snippets = [r.get_text(' ', strip=True) for r in soup.select('.b_algo')]
-            all_snippets.extend(snippets)
-            if len(all_snippets) >= 5:
-                break
-        except Exception as e:
-            current_app.logger.error(f"[BING_LAWYER] {query[:50]}: {e}")
-
-    snippet_text = ' '.join(all_snippets)[:3000]
-    if not snippet_text.strip():
-        return []
-    return identify_lawyers_from_search(case_title, snippet_text)
-
-
 def _search_indiankanoon(case_title: str) -> list:
     """Search IndianKanoon and scrape the top case document for advocate names."""
     encoded = quote_plus(case_title)
@@ -229,13 +200,12 @@ def _search_indiankanoon(case_title: str) -> list:
     return lawyers
 
 
-def _cross_verify(ai_lawyers: list, bing_lawyers: list, ik_lawyers: list,
-                   article_lawyers: list | None = None) -> list:
+def _cross_verify(ai_lawyers: list, ik_lawyers: list) -> list:
     """
-    Merge lawyer lists from up to 4 sources, assign confidence scores.
+    Merge lawyer lists from Google-grounded AI and IndianKanoon scraping.
 
-    Sources: ai_analysis | bing_search | indiankanoon | article_regex
-    Confidence: 3+ distinct sources → 0.9 | 2 sources → 0.7 | 1 source → 0.4
+    Sources: grounded_ai (Prompt 1 + Prompt 2) | indiankanoon
+    Confidence: seen in both → 0.9 (verified) | one source → 0.4
     """
     master: list = []
 
@@ -263,19 +233,13 @@ def _cross_verify(ai_lawyers: list, bing_lawyers: list, ik_lawyers: list,
 
     for l in ai_lawyers:
         _add(l.get('name', ''), l.get('firm', ''), l.get('role', ''),
-             'ai_analysis', 'AI extraction from article')
-    for l in bing_lawyers:
-        _add(l.get('name', ''), l.get('firm', ''), l.get('role', ''),
-             'bing_search', 'Bing + AI extraction')
+             'grounded_ai', 'Gemma 4 + Google Search')
     for l in ik_lawyers:
         _add(l.get('name', ''), '', '', 'indiankanoon', 'IndianKanoon.org')
-    for l in (article_lawyers or []):
-        _add(l.get('name', ''), l.get('firm', ''), l.get('role', ''),
-             'article_regex', 'Regex from article text')
 
     for entry in master:
         n = len(set(s['type'] for s in entry['sources']))
-        entry['confidence'] = 0.9 if n >= 3 else (0.7 if n == 2 else 0.4)
+        entry['confidence'] = 0.9 if n >= 2 else 0.4
         entry['verified'] = n >= 2
 
     master.sort(key=lambda x: x['confidence'], reverse=True)
@@ -287,19 +251,17 @@ def _cross_verify(ai_lawyers: list, bing_lawyers: list, ik_lawyers: list,
 
 
 def _multi_source_lawyers(case_title: str, ai_lawyers: list, case_name: str = '') -> list:
-    """Orchestrate 3-source lawyer discovery and cross-verification."""
-    bing_lawyers = _search_bing_lawyers(case_title, case_name=case_name)
-    ik_lawyers = _search_indiankanoon(case_title)
+    """Cross-verify grounded AI lawyers against IndianKanoon."""
+    ik_lawyers = _search_indiankanoon(case_name or case_title)
     current_app.logger.info(
-        f"[LAWYERS] ai={len(ai_lawyers)} bing={len(bing_lawyers)} ik={len(ik_lawyers)}"
+        f"[LAWYERS] grounded_ai={len(ai_lawyers)} indiankanoon={len(ik_lawyers)}"
     )
-    return _cross_verify(ai_lawyers, bing_lawyers, ik_lawyers)
+    return _cross_verify(ai_lawyers, ik_lawyers)
 
 
 # ── Stage 6: Contact discovery ────────────────────────────────────────────────
 
 _EMAIL_RE = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
-_LINKEDIN_RE = re.compile(r'https?://(?:www\.)?linkedin\.com/in/[a-zA-Z0-9_%\-./]+')
 _EMAIL_BLOCKED = {'example.com', 'bing.com', 'microsoft.com', 'google.com',
                   'sampleemail', 'test.com', 'email.com', 'wikidata.org',
                   'wikipedia.org', 'schema.org', 'w3.org'}
@@ -311,61 +273,6 @@ def _is_valid_email(email: str) -> bool:
     if any(b in email.lower() for b in _EMAIL_BLOCKED):
         return False
     return bool(_EMAIL_RE.fullmatch(email))
-
-
-_GENERIC_DOMAINS = {
-    'wikipedia', 'linkedin', 'google', 'bing', 'youtube', 'facebook',
-    'twitter', 'x.com', 'instagram', 'justdial', 'indiakanoon',
-    'barandbench', 'livelaw', 'lawrato', 'advocatekhoj',
-}
-_FIRM_PAGE_PATHS = ['/team', '/people', '/attorneys', '/lawyers', '/our-team',
-                    '/our-lawyers', '/professionals', '/partners', '/contact']
-
-
-def _extract_domain_from_firm(firm: str) -> str | None:
-    """Find the law firm's website domain via Bing."""
-    if not firm or firm.lower() in ('unknown firm', 'n/a', ''):
-        return None
-    try:
-        query = quote_plus(f"{firm} India law firm official website")
-        resp = requests.get(f"https://www.bing.com/search?q={query}&count=3",
-                            headers=HEADERS, timeout=8)
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        for a in soup.select('.b_algo h2 a'):
-            href = a.get('href', '')
-            if href.startswith('http'):
-                m = re.match(r'https?://(?:www\.)?([^/]+)', href)
-                if m:
-                    domain = m.group(1).lower()
-                    if not any(g in domain for g in _GENERIC_DOMAINS):
-                        return domain
-    except Exception:
-        pass
-    return None
-
-
-def _scrape_firm_pages(firm_domain: str, lawyer_name: str) -> str | None:
-    """Scrape firm's team/contact pages for a specific lawyer's email."""
-    name_parts = [p.lower() for p in _normalize_name(lawyer_name).split() if len(p) > 3]
-    base = f"https://{firm_domain}"
-    for path in _FIRM_PAGE_PATHS:
-        try:
-            resp = requests.get(base + path, headers=HEADERS, timeout=6, allow_redirects=True)
-            if resp.status_code != 200:
-                continue
-            text = resp.text
-            text_lower = text.lower()
-            if not any(p in text_lower for p in name_parts):
-                continue
-            emails = [e for e in _EMAIL_RE.findall(text) if _is_valid_email(e)]
-            if emails:
-                current_app.logger.info(
-                    f"[CONTACT] {lawyer_name}: email on {firm_domain}{path}"
-                )
-                return emails[0]
-        except Exception:
-            continue
-    return None
 
 
 def _search_lawrato(name: str) -> str | None:
@@ -428,103 +335,13 @@ def _search_advocatekhoj(name: str) -> str | None:
     return None
 
 
-def _hunter_find_email(name: str, domain: str) -> str | None:
-    """Use Hunter.io email-finder API (if HUNTER_API_KEY is set)."""
-    api_key = current_app.config.get('HUNTER_API_KEY')
-    if not api_key or not domain:
-        return None
-    parts = _normalize_name(name).split()
-    if len(parts) < 2:
-        return None
-    try:
-        resp = requests.get(
-            'https://api.hunter.io/v2/email-finder',
-            params={
-                'domain': domain,
-                'first_name': parts[0],
-                'last_name': parts[-1],
-                'api_key': api_key,
-            },
-            timeout=10
-        )
-        data = resp.json().get('data', {})
-        email = data.get('email')
-        score = data.get('score', 0)
-        if email and score >= 50:
-            current_app.logger.info(f"[HUNTER] {name}: {email} (score={score})")
-            return email
-    except Exception as e:
-        current_app.logger.error(f"[HUNTER] {name}: {e}")
-    return None
-
-
-def _bing_search_email(name: str, firm: str) -> tuple[str | None, str | None]:
-    """
-    Try multiple Bing query variants to find an email address.
-    Returns (email, linkedin_url).
-    """
-    firm_str = f'"{firm}" ' if firm and firm.lower() not in ('unknown firm', '', 'n/a') else ''
-    queries = [
-        f'"{name}" {firm_str}advocate email India',
-        f'"{name}" {firm_str}lawyer contact India',
-        f'"{name}" senior advocate India email OR contact',
-        f'{name} advocate India "@" email',
-    ]
-
-    found_email = None
-    found_linkedin = None
-
-    for query in queries:
-        if found_email:
-            break
-        try:
-            resp = requests.get(
-                f"https://www.bing.com/search?q={quote_plus(query)}&count=10",
-                headers=HEADERS, timeout=10
-            )
-            html = resp.text
-            emails = [e for e in _EMAIL_RE.findall(html) if _is_valid_email(e)]
-            linkedins = _LINKEDIN_RE.findall(html)
-
-            if emails:
-                found_email = emails[0]
-            if linkedins and not found_linkedin:
-                found_linkedin = linkedins[0]
-
-            if not found_email:
-                soup = BeautifulSoup(html, 'html.parser')
-                links = [
-                    a.get('href', '') for a in soup.select('.b_algo h2 a')
-                    if a.get('href', '').startswith('http') and 'bing.com' not in a.get('href', '')
-                ]
-                for link in links[:3]:
-                    try:
-                        pr = requests.get(link, headers=HEADERS, timeout=7, allow_redirects=True)
-                        pe = [e for e in _EMAIL_RE.findall(pr.text) if _is_valid_email(e)]
-                        pl = _LINKEDIN_RE.findall(pr.text)
-                        if pe:
-                            found_email = pe[0]
-                            break
-                        if pl and not found_linkedin:
-                            found_linkedin = pl[0]
-                    except Exception:
-                        continue
-        except Exception:
-            continue
-
-    return found_email, found_linkedin
-
-
 def _discover_contacts(name: str, firm: str) -> tuple[str | None, str | None, str | None]:
     """
-    Find email and LinkedIn for a lawyer using 5 source tiers.
+    Fallback contact discovery after discover_contact_grounded() found nothing.
 
     Sources (in order):
-      1. Bing — 4 query variants + page scraping
-      2. LawRato.com — India lawyer directory
-      3. AdvocateKhoj.com — India bar directory
-      4. Firm website team/contact pages
-      5. Hunter.io API (only if HUNTER_API_KEY env var is set)
+      1. LawRato.com — India lawyer directory
+      2. AdvocateKhoj.com — India bar directory
 
     Returns (email, linkedin_url, email_source).
     """
@@ -532,53 +349,20 @@ def _discover_contacts(name: str, firm: str) -> tuple[str | None, str | None, st
         return None, None, None
 
     found_email: str | None = None
-    found_linkedin: str | None = None
     found_source: str | None = None
 
-    # ── 1. Bing ───────────────────────────────────────────────────────────────
-    found_email, found_linkedin = _bing_search_email(name, firm)
+    # ── 1. LawRato ────────────────────────────────────────────────────────────
+    found_email = _search_lawrato(name)
     if found_email:
-        found_source = 'bing_search'
+        found_source = 'lawrato'
 
-    # ── 2. LawRato ────────────────────────────────────────────────────────────
-    if not found_email:
-        found_email = _search_lawrato(name)
-        if found_email:
-            found_source = 'lawrato'
-
-    # ── 3. AdvocateKhoj ───────────────────────────────────────────────────────
+    # ── 2. AdvocateKhoj ───────────────────────────────────────────────────────
     if not found_email:
         found_email = _search_advocatekhoj(name)
         if found_email:
             found_source = 'advocatekhoj'
 
-    # ── 4. Firm website ───────────────────────────────────────────────────────
-    if not found_email and firm:
-        domain = _extract_domain_from_firm(firm)
-        if domain:
-            found_email = _scrape_firm_pages(domain, name)
-            if found_email:
-                found_source = 'firm_website'
-            if not found_email:
-                found_email = _hunter_find_email(name, domain)
-                if found_email:
-                    found_source = 'hunter_io'
-
-    # ── 5. LinkedIn (always try, independent of email search) ─────────────────
-    if not found_linkedin:
-        try:
-            li_query = quote_plus(f'"{name}" advocate India site:linkedin.com/in/')
-            li_resp = requests.get(
-                f"https://www.bing.com/search?q={li_query}&count=3",
-                headers=HEADERS, timeout=8
-            )
-            li_matches = _LINKEDIN_RE.findall(li_resp.text)
-            if li_matches:
-                found_linkedin = li_matches[0]
-        except Exception:
-            pass
-
-    return found_email, found_linkedin, found_source
+    return found_email, None, found_source
 
 
 # ── Stage 7: Save to DB ───────────────────────────────────────────────────────
@@ -692,7 +476,7 @@ def scan_for_cases(progress_cb=None) -> dict:
             log(f"    ⚠ Grounded lawyer search failed: {e}")
             grounded_lawyers = []
 
-        # Stage 1b: Bing + IndianKanoon enrichment
+        # Stage 1b: IndianKanoon cross-verification
         combined = ai_lawyers + grounded_lawyers
         verified_lawyers = _multi_source_lawyers(
             case_name or source_url, combined,
