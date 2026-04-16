@@ -1,57 +1,28 @@
 """
-Case discovery pipeline — staged, multi-source.
+Case discovery pipeline — AI-grounded.
 
 Stages:
-  1. _fetch_articles()         — RSS feeds + Bing queries
-  2. _fast_keyword_filter()    — cheap title-based gate (no API)
-  3. _deduplicate()            — skip if URL/title already in DB
-  4. _ai_validate_case()       — AI gate: real case? extract metadata
-  5. _multi_source_lawyers()   — 3-source lawyer enrichment + cross-verify
-  6. _discover_contacts()      — email + LinkedIn per lawyer
-  7. _save_case()              — persist to DB
+  0. discover_cases_grounded()   — Gemma 4 + Google Search finds trending cases
+  1. _multi_source_lawyers()     — Bing + IndianKanoon + regex lawyer enrichment
+  2. _discover_contacts()        — email + LinkedIn per lawyer
+  3. _save_case()                — persist to DB
 
 scan_for_cases() returns a summary dict for the UI.
 """
 
 import re
 import json
-import feedparser
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from urllib.parse import quote_plus
 from bs4 import BeautifulSoup
 from flask import current_app
 from app import db
 from app.models import LegalCase, Lawyer
-from app.ai.gemma import (analyze_case, identify_lawyers_from_search,
+from app.ai.gemma import (identify_lawyers_from_search,
                            discover_cases_grounded, discover_lawyers_grounded,
                            discover_contact_grounded)
 
-
-# ── Article sources ──────────────────────────────────────────────────────────
-
-LEGAL_RSS_FEEDS = [
-    ('LiveLaw', 'https://www.livelaw.in/feed'),
-    ('Bar and Bench', 'https://www.barandbench.com/feed'),
-]
-
-SITE_QUERIES = [
-    ('LiveLaw', 'site:livelaw.in Supreme Court judgment advocate'),
-    ('LiveLaw', 'site:livelaw.in High Court verdict senior advocate'),
-    ('LiveLaw', 'site:livelaw.in PIL petition hearing'),
-    ('LiveLaw', 'site:livelaw.in NCLT SEBI order advocate'),
-    ('Bar and Bench', 'site:barandbench.com Supreme Court judgment advocate'),
-    ('Bar and Bench', 'site:barandbench.com High Court verdict petition'),
-    ('Bar and Bench', 'site:barandbench.com NCLT insolvency order'),
-]
-
-FALLBACK_QUERIES = [
-    'India Supreme Court judgment advocate senior counsel 2025',
-    'India High Court verdict petition lawyer 2025',
-    'NCLT insolvency order advocate India',
-    'SEBI order penalty hearing India',
-    'India PIL Supreme Court senior advocate',
-]
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -96,171 +67,6 @@ def _is_party_role(role: str) -> bool:
     return any(p in r for p in PARTY_ROLE_FRAGMENTS)
 
 
-# Patterns in article titles that suggest analysis/opinion pieces, not court cases
-ARTICLE_TITLE_PATTERNS = [
-    r'\bbalancing\b', r'\bexplainer\b', r'\banalysis\b', r'\bperspective\b',
-    r'\boverview\b', r'\bguide\b', r'\bimplications of\b', r'\brealities\b',
-    r'\blandscape\b', r'\bframework\b', r'\breform\b', r'\bchallenges\b',
-    r'\bintersection of\b', r'\brole of\b', r'\bevolution of\b',
-]
-_ARTICLE_RE = re.compile('|'.join(ARTICLE_TITLE_PATTERNS), re.IGNORECASE)
-
-# ── Fast keyword filter sets ─────────────────────────────────────────────────
-
-# Strong proceeding indicators — any one of these strongly suggests a real case
-PROCEEDING_KEYWORDS = {
-    'judgment', 'judgement', 'verdict', 'order passed', 'bail granted',
-    'bail denied', 'bail rejected', 'conviction', 'acquittal', 'acquitted',
-    'convicted', 'writ', 'quashed', 'quash', 'dismissed', 'upheld',
-    'sentence', 'sentencing', 'chargesheet', 'plea bargain',
-    'injunction', 'stay granted', 'stay refused', 'suo motu', 'suo-motu',
-    'judgment pronounced', 'order reserved', 'hearing concluded',
-}
-
-# Court / tribunal identifiers
-COURT_KEYWORDS = {
-    'supreme court', 'high court', 'nclt', 'nclat', 'district court',
-    'sessions court', 'tribunal', 'sebi', 'cci', 'ngt', 'consumer court',
-    'itat', 'bench', 'division bench', 'single bench', 'sat', 'drt',
-    'national company law', 'appellate tribunal',
-}
-
-# Weak proceeding words — only count if a court keyword is also present
-WEAK_PROCEEDING = {
-    'petition', 'hearing', 'appeal', 'order', 'case', 'matter',
-    'bail', 'pil', 'versus', 'v.', 'vs.', 'advocate', 'counsel',
-}
-
-
-# ── Stage 1: Article fetching ────────────────────────────────────────────────
-
-def _fetch_rss(feed_url: str, source_name: str, days: int = 7) -> list:
-    try:
-        resp = requests.get(feed_url, headers=HEADERS, timeout=15)
-        feed = feedparser.parse(resp.text)
-        current_app.logger.info(f"[RSS:{source_name}] {len(feed.entries)} entries")
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        articles = []
-        for entry in feed.entries[:20]:
-            # Require a published date — skip undated entries (often stale/old)
-            if not (hasattr(entry, 'published_parsed') and entry.published_parsed):
-                continue
-            published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-            if published < cutoff:
-                continue
-            title = entry.get('title', '').strip()
-            link = entry.get('link', '').strip()
-            if title and link:
-                articles.append({'title': title, 'url': link,
-                                 'source': source_name, 'published': published})
-        return articles
-    except Exception as e:
-        current_app.logger.error(f"[RSS:{source_name}] {e}")
-        return []
-
-
-def _fetch_bing(query: str, source_name: str | None = None, days: int = 7) -> list:
-    encoded = quote_plus(query)
-    url = f"https://www.bing.com/news/search?q={encoded}&format=rss&count=10&mkt=en-IN"
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        feed = feedparser.parse(resp.text)
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        articles = []
-        for entry in feed.entries[:10]:
-            # Require a published date — skip undated entries
-            if not (hasattr(entry, 'published_parsed') and entry.published_parsed):
-                continue
-            published = datetime(*entry.published_parsed[:6], tzinfo=timezone.utc)
-            if published < cutoff:
-                continue
-            entry_url = entry.get('link', '')
-            if source_name:
-                src = source_name
-            elif 'livelaw.in' in entry_url:
-                src = 'LiveLaw'
-            elif 'barandbench.com' in entry_url:
-                src = 'Bar and Bench'
-            else:
-                src = entry.get('source', {}).get('title', 'News')
-            title = entry.get('title', '').strip()
-            if title and entry_url:
-                articles.append({'title': title, 'url': entry_url,
-                                 'source': src, 'published': published})
-        return articles
-    except Exception as e:
-        current_app.logger.error(f"[BING] {query[:40]}: {e}")
-        return []
-
-
-def _fetch_articles() -> list:
-    """Collect candidate articles from all 3 tiers, deduplicating by URL."""
-    seen_urls: set = set()
-    all_articles: list = []
-
-    def _add(articles):
-        for a in articles:
-            u = a['url'].strip()
-            if u and u not in seen_urls:
-                seen_urls.add(u)
-                all_articles.append(a)
-
-    # Tier 1: Direct RSS
-    for name, feed_url in LEGAL_RSS_FEEDS:
-        _add(_fetch_rss(feed_url, name))
-    current_app.logger.info(f"[FETCH] Tier 1: {len(all_articles)} articles")
-
-    # Tier 2: Site-specific Bing (only if RSS yielded few results)
-    if len(all_articles) < MAX_NEW_CASES * 2:
-        for src, query in SITE_QUERIES:
-            _add(_fetch_bing(query, source_name=src))
-        current_app.logger.info(f"[FETCH] Tier 2: {len(all_articles)} articles")
-
-    # Tier 3: Generic fallback
-    if len(all_articles) < MAX_NEW_CASES:
-        for query in FALLBACK_QUERIES:
-            _add(_fetch_bing(query))
-        current_app.logger.info(f"[FETCH] Tier 3: {len(all_articles)} articles")
-
-    return all_articles
-
-
-# ── Stage 2: Fast keyword filter ─────────────────────────────────────────────
-
-def _fast_keyword_filter(articles: list) -> list:
-    """
-    Remove obvious non-cases without any API call.
-    Rules (must pass ALL):
-      (a) strong proceeding keyword OR (court keyword + weak proceeding keyword)
-      (b) title does NOT look like an analysis/opinion article
-    """
-    kept = []
-    for a in articles:
-        t = a['title'].lower()
-        has_proceeding = any(kw in t for kw in PROCEEDING_KEYWORDS)
-        has_court = any(kw in t for kw in COURT_KEYWORDS)
-        has_weak = any(kw in t for kw in WEAK_PROCEEDING)
-
-        # Rule (a): must have case-like keywords
-        if not has_proceeding and not (has_court and has_weak):
-            continue
-
-        # Rule (b): reject titles that look like explainer / analysis articles
-        # A title with a colon AND an analysis-word is almost always an article
-        has_colon = ':' in a['title']
-        has_article_word = bool(_ARTICLE_RE.search(a['title']))
-        if has_colon and has_article_word:
-            current_app.logger.info(f"[FILTER] Article-style title rejected: {a['title'][:80]}")
-            continue
-
-        kept.append(a)
-
-    current_app.logger.info(
-        f"[FILTER] {len(kept)}/{len(articles)} passed keyword filter"
-    )
-    return kept
-
-
 # ── Stage 3: Deduplication ────────────────────────────────────────────────────
 
 def _is_duplicate(title: str, source_url: str) -> bool:
@@ -273,22 +79,6 @@ def _is_duplicate(title: str, source_url: str) -> bool:
         if c.title[:50].lower() == prefix:
             return True
     return False
-
-
-# ── Stage 4: AI case validation ───────────────────────────────────────────────
-
-def _fetch_article_text(url: str) -> str:
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=12, allow_redirects=True)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        for tag in soup(['script', 'style', 'nav', 'footer', 'header', 'aside']):
-            tag.decompose()
-        text = ' '.join(p.get_text(strip=True) for p in soup.find_all('p'))
-        return text[:5000]
-    except Exception as e:
-        current_app.logger.error(f"[SCRAPE] {url[:60]}: {e}")
-        return ''
 
 
 # ── Stage 5: Multi-source lawyer discovery ────────────────────────────────────
@@ -363,22 +153,8 @@ def _extract_names_regex(text: str) -> list:
     return names
 
 
-def _extract_from_article(article_text: str) -> list:
-    """Extract lawyer names directly from article text via regex (4th source)."""
-    return [
-        {'name': n, 'firm': '', 'role': '', 'source': 'article_regex'}
-        for n in _extract_names_regex(article_text)
-    ]
-
-
 def _search_bing_lawyers(case_title: str, case_name: str = '') -> list:
-    """Bing web search for lawyers in a case, pass snippets to AI.
-
-    Tries two queries:
-      1. Shortened case title with advocate keywords
-      2. Party v. Party format (if extracted by AI) — often more findable
-    """
-    # Use party names (e.g. "State v. Sharma") if available, else shortened title
+    """Bing web search for lawyers in a case, pass snippets to AI."""
     short_title = (case_name or case_title)[:70]
     queries = [
         f'{short_title} advocate OR "senior advocate" India',
@@ -423,8 +199,7 @@ def _search_indiankanoon(case_title: str) -> list:
         resp = requests.get(search_url, headers=HEADERS, timeout=12)
         soup = BeautifulSoup(resp.text, 'html.parser')
 
-        # Follow the first case document link — these pages have structured
-        # "For Petitioner: Adv. X" sections that regex catches well
+        # Follow the first case document link
         doc_link = None
         for a in soup.select('.result_title a, a[href]'):
             href = a.get('href', '')
@@ -436,7 +211,6 @@ def _search_indiankanoon(case_title: str) -> list:
             try:
                 doc_resp = requests.get(doc_link, headers=HEADERS, timeout=12)
                 doc_soup = BeautifulSoup(doc_resp.text, 'html.parser')
-                # The preamble section (first ~3000 chars) holds advocate listings
                 doc_text = doc_soup.get_text(' ', strip=True)
                 _add_names(doc_text[:6000])
                 current_app.logger.info(
@@ -445,7 +219,6 @@ def _search_indiankanoon(case_title: str) -> list:
             except Exception as e:
                 current_app.logger.error(f"[IK DOC] {e}")
 
-        # Also mine the search snippet text as a fallback
         snippets = soup.select('.result, .result_title, .snippet')
         snippet_text = ' '.join(s.get_text(' ', strip=True) for s in snippets[:8])
         _add_names(snippet_text)
@@ -513,17 +286,14 @@ def _cross_verify(ai_lawyers: list, bing_lawyers: list, ik_lawyers: list,
     return master
 
 
-def _multi_source_lawyers(case_title: str, ai_lawyers: list,
-                           article_text: str = '', case_name: str = '') -> list:
-    """Orchestrate 4-source lawyer discovery and cross-verification."""
-    article_lawyers = _extract_from_article(article_text) if article_text else []
+def _multi_source_lawyers(case_title: str, ai_lawyers: list, case_name: str = '') -> list:
+    """Orchestrate 3-source lawyer discovery and cross-verification."""
     bing_lawyers = _search_bing_lawyers(case_title, case_name=case_name)
     ik_lawyers = _search_indiankanoon(case_title)
     current_app.logger.info(
-        f"[LAWYERS] ai={len(ai_lawyers)} article_regex={len(article_lawyers)} "
-        f"bing={len(bing_lawyers)} ik={len(ik_lawyers)}"
+        f"[LAWYERS] ai={len(ai_lawyers)} bing={len(bing_lawyers)} ik={len(ik_lawyers)}"
     )
-    return _cross_verify(ai_lawyers, bing_lawyers, ik_lawyers, article_lawyers)
+    return _cross_verify(ai_lawyers, bing_lawyers, ik_lawyers)
 
 
 # ── Stage 6: Contact discovery ────────────────────────────────────────────────
@@ -575,10 +345,7 @@ def _extract_domain_from_firm(firm: str) -> str | None:
 
 
 def _scrape_firm_pages(firm_domain: str, lawyer_name: str) -> str | None:
-    """
-    Scrape firm's team/contact pages for a specific lawyer's email.
-    Checks /team, /people, /attorneys, /contact, etc.
-    """
+    """Scrape firm's team/contact pages for a specific lawyer's email."""
     name_parts = [p.lower() for p in _normalize_name(lawyer_name).split() if len(p) > 3]
     base = f"https://{firm_domain}"
     for path in _FIRM_PAGE_PATHS:
@@ -587,7 +354,6 @@ def _scrape_firm_pages(firm_domain: str, lawyer_name: str) -> str | None:
             if resp.status_code != 200:
                 continue
             text = resp.text
-            # Only process if this page mentions the lawyer
             text_lower = text.lower()
             if not any(p in text_lower for p in name_parts):
                 continue
@@ -613,7 +379,6 @@ def _search_lawrato(name: str) -> str | None:
         soup = BeautifulSoup(resp.text, 'html.parser')
         name_parts = [p.lower() for p in _normalize_name(name).split() if len(p) > 3]
 
-        # Find matching lawyer profile links
         for a in soup.select('a[href*="/indian-lawyers/"], a[href*="/lawyer/"]'):
             link_text = a.get_text(strip=True).lower()
             if not any(p in link_text for p in name_parts):
@@ -727,7 +492,6 @@ def _bing_search_email(name: str, firm: str) -> tuple[str | None, str | None]:
                 found_linkedin = linkedins[0]
 
             if not found_email:
-                # Scrape top 3 result pages
                 soup = BeautifulSoup(html, 'html.parser')
                 links = [
                     a.get('href', '') for a in soup.select('.b_algo h2 a')
@@ -759,10 +523,9 @@ def _discover_contacts(name: str, firm: str) -> tuple[str | None, str | None, st
       1. Bing — 4 query variants + page scraping
       2. LawRato.com — India lawyer directory
       3. AdvocateKhoj.com — India bar directory
-      4. Firm website team/contact pages (scrape /team, /people, /attorneys…)
+      4. Firm website team/contact pages
       5. Hunter.io API (only if HUNTER_API_KEY env var is set)
 
-    Pattern inference removed — unverified guesses pollute the DB.
     Returns (email, linkedin_url, email_source).
     """
     if not name or _normalize_name(name) in NAME_BLOCKLIST:
@@ -772,31 +535,30 @@ def _discover_contacts(name: str, firm: str) -> tuple[str | None, str | None, st
     found_linkedin: str | None = None
     found_source: str | None = None
 
-    # ── 1. Bing (4 query variants) ────────────────────────────────────────────
+    # ── 1. Bing ───────────────────────────────────────────────────────────────
     found_email, found_linkedin = _bing_search_email(name, firm)
     if found_email:
         found_source = 'bing_search'
 
-    # ── 2. LawRato directory ──────────────────────────────────────────────────
+    # ── 2. LawRato ────────────────────────────────────────────────────────────
     if not found_email:
         found_email = _search_lawrato(name)
         if found_email:
             found_source = 'lawrato'
 
-    # ── 3. AdvocateKhoj directory ─────────────────────────────────────────────
+    # ── 3. AdvocateKhoj ───────────────────────────────────────────────────────
     if not found_email:
         found_email = _search_advocatekhoj(name)
         if found_email:
             found_source = 'advocatekhoj'
 
-    # ── 4. Firm website team/contact pages ───────────────────────────────────
+    # ── 4. Firm website ───────────────────────────────────────────────────────
     if not found_email and firm:
         domain = _extract_domain_from_firm(firm)
         if domain:
             found_email = _scrape_firm_pages(domain, name)
             if found_email:
                 found_source = 'firm_website'
-            # Hunter.io on firm domain as a bonus step
             if not found_email:
                 found_email = _hunter_find_email(name, domain)
                 if found_email:
@@ -830,7 +592,6 @@ def _compute_trending_score(analysis: dict) -> float:
     if isinstance(ai_score, (int, float)) and 0 <= ai_score <= 1:
         return round(ai_score * 10, 2)
 
-    # Fallback derivation
     score = 5.0
     if analysis.get('status') in ('pending', 'reserved'):
         score += 2.0
@@ -850,20 +611,16 @@ def _compute_trending_score(analysis: dict) -> float:
 
 def scan_for_cases(progress_cb=None) -> dict:
     """
-    Run the full discovery pipeline.
+    Run the grounded discovery pipeline.
 
     progress_cb: optional callable(str) — receives human-readable log lines
                  in real-time (used to stream logs to the UI).
 
     Returns a summary dict:
       {
-        'articles_found': int,
-        'passed_filter': int,
-        'valid_cases': int,
-        'skipped_duplicates': int,
-        'skipped_not_case': int,
-        'skipped_no_lawyers': int,
         'new_cases': int,
+        'skipped_duplicates': int,
+        'skipped_no_lawyers': int,
         'lawyers_found': int,
         'lawyers_with_email': int,
       }
@@ -878,58 +635,36 @@ def scan_for_cases(progress_cb=None) -> dict:
                 pass
 
     summary = {
-        'articles_found': 0,
-        'passed_filter': 0,
-        'valid_cases': 0,
-        'skipped_duplicates': 0,
-        'skipped_not_case': 0,
-        'skipped_no_lawyers': 0,
         'new_cases': 0,
+        'skipped_duplicates': 0,
+        'skipped_no_lawyers': 0,
         'lawyers_found': 0,
         'lawyers_with_email': 0,
+        # kept for UI compatibility
+        'skipped_not_case': 0,
     }
 
     log("━━━ SCAN START ━━━")
 
     # ── Stage 0: Grounded discovery (Gemma 4 + Google Search) ────────────────
-    # Ask Gemma to search Google directly for trending Indian cases.
-    # If it returns results, skip the whole RSS → scrape → filter pipeline.
-    log("Stage 0 — Grounded discovery: Gemma 4 searching Google for trending cases...")
+    log("Stage 0 — Gemma 4 searching Google for trending Indian cases...")
     grounded_cases = []
     try:
         grounded_cases = discover_cases_grounded()
-        log(f"  Grounded search found {len(grounded_cases)} cases")
+        log(f"  Found {len(grounded_cases)} cases via grounded search")
     except Exception as e:
-        log(f"  ⚠ Grounded search failed ({e}) — falling back to RSS pipeline")
+        log(f"  ❌ Grounded search failed: {e}")
 
-    use_rss_fallback = len(grounded_cases) == 0
-
-    if use_rss_fallback:
-        # ── Stage 1-2: RSS + Bing fallback ───────────────────────────────────
-        log("Stage 1 — Fetching articles from RSS + Bing (fallback)...")
-        articles = _fetch_articles()
-        summary['articles_found'] = len(articles)
-        log(f"  Found {len(articles)} articles total")
-
-        log("Stage 2 — Keyword filter (no API)...")
-        articles = _fast_keyword_filter(articles)
-        summary['passed_filter'] = len(articles)
-        log(f"  {len(articles)} articles passed the case-keyword filter")
-        if not articles:
-            log("  ⚠ No articles passed filter — check RSS feeds")
-    else:
-        summary['articles_found'] = len(grounded_cases)
-        summary['passed_filter'] = len(grounded_cases)
-
-    # Build a unified work queue: either grounded case dicts or article dicts
-    work_queue = grounded_cases if not use_rss_fallback else []
-    rss_queue = [] if not use_rss_fallback else articles
+    if not grounded_cases:
+        log("  ⚠ No cases returned — scan complete")
+        log("━━━ DONE: 0 cases ━━━")
+        return summary
 
     seen_in_scan: set = set()
 
     def _process_case(analysis: dict, source_url: str, source_name: str,
-                       published_date=None, article_text: str = ''):
-        """Common path: lawyer discovery + contact + save for one validated case."""
+                       published_date=None):
+        """Lawyer discovery + contact + save for one validated case."""
         nonlocal summary
 
         case_name = analysis.get('case_name', '').strip()
@@ -938,7 +673,7 @@ def scan_for_cases(progress_cb=None) -> dict:
         ai_lawyers = analysis.get('lawyers', [])
         score = analysis.get('trending_score', 0)
 
-        log(f"  ✓ Valid case: {case_name[:55]}")
+        log(f"  ✓ {case_name[:60]}")
         log(f"    Court: {court or 'unknown'}  |  Area: {practice}  |  Score: {score:.2f}")
         log(f"    AI found {len(ai_lawyers)} lawyer(s): "
             + ', '.join(l.get('name', '?') for l in ai_lawyers[:5]))
@@ -948,31 +683,29 @@ def scan_for_cases(progress_cb=None) -> dict:
             summary['skipped_no_lawyers'] += 1
             return
 
-        summary['valid_cases'] += 1
-
-        # Stage 5a: grounded lawyer enrichment (search for more lawyers for this case)
+        # Stage 1a: grounded lawyer enrichment
         log(f"  👤 Grounded lawyer search for: {case_name[:50]}...")
         try:
             grounded_lawyers = discover_lawyers_grounded(case_name, court)
-            log(f"    Grounded search found {len(grounded_lawyers)} additional lawyers")
+            log(f"    Grounded found {len(grounded_lawyers)} additional lawyers")
         except Exception as e:
             log(f"    ⚠ Grounded lawyer search failed: {e}")
             grounded_lawyers = []
 
-        # Stage 5b: traditional multi-source enrichment
+        # Stage 1b: Bing + IndianKanoon enrichment
         verified_lawyers = _multi_source_lawyers(
             case_name or source_url, ai_lawyers + grounded_lawyers,
-            article_text=article_text, case_name=case_name
+            case_name=case_name
         )
         log(f"    → {len(verified_lawyers)} unique lawyers "
             f"({sum(1 for l in verified_lawyers if l['verified'])} verified)")
 
         if not verified_lawyers:
-            log(f"  ✗ All lawyers filtered out — skipped")
+            log(f"  ✗ All lawyers filtered — skipped")
             summary['skipped_no_lawyers'] += 1
             return
 
-        # Stage 6: Contact discovery (grounded first, then traditional)
+        # Stage 2: Contact discovery (grounded first, then traditional)
         lawyer_objects = []
         for vl in verified_lawyers:
             name = vl.get('name', '').strip()
@@ -982,16 +715,14 @@ def scan_for_cases(progress_cb=None) -> dict:
 
             log(f"    🔎 Contact: {name} (conf={vl['confidence']:.1f})")
 
-            # Try grounded contact discovery first
             email, linkedin = None, None
             try:
                 email, linkedin = discover_contact_grounded(name, firm)
                 if email:
-                    log(f"      ✉ Email via grounded search: {email}")
+                    log(f"      ✉ Email via grounded: {email}")
             except Exception:
                 pass
 
-            # Fall back to traditional scraping if grounded found nothing
             if not email:
                 email, linkedin_t, email_src = _discover_contacts(name, firm)
                 if not linkedin:
@@ -1016,11 +747,11 @@ def scan_for_cases(progress_cb=None) -> dict:
             if email:
                 summary['lawyers_with_email'] += 1
 
-        # Stage 7: Save
+        # Stage 3: Save
         saved_title = case_name or source_url[:80]
         case = LegalCase(
             title=saved_title,
-            summary=analysis.get('summary', article_text[:300]),
+            summary=analysis.get('summary', ''),
             source_url=source_url,
             source_name=source_name,
             published_date=published_date,
@@ -1036,9 +767,10 @@ def scan_for_cases(progress_cb=None) -> dict:
         log(f"  ✅ Saved: {saved_title[:60]} — {len(lawyer_objects)} lawyers")
 
     # ── Process grounded cases ────────────────────────────────────────────────
-    for gc in work_queue:
+    for gc in grounded_cases:
         if summary['new_cases'] >= MAX_NEW_CASES:
             break
+
         case_name = gc.get('case_name', '').strip()
         title_key = case_name[:60].lower()
         source_url = gc.get('source_url', '')
@@ -1049,7 +781,6 @@ def scan_for_cases(progress_cb=None) -> dict:
             continue
         seen_in_scan.add(title_key)
 
-        # Add is_case=True (grounded AI already validated these)
         gc['is_case'] = True
         try:
             _process_case(
@@ -1059,78 +790,11 @@ def scan_for_cases(progress_cb=None) -> dict:
                 published_date=datetime.now(timezone.utc),
             )
         except Exception as e:
-            log(f"  ❌ Error: {e}")
+            log(f"  ❌ Error processing {case_name[:50]}: {e}")
             db.session.rollback()
-
-    # ── Process RSS fallback articles ─────────────────────────────────────────
-    for article in rss_queue:
-        if summary['new_cases'] >= MAX_NEW_CASES:
-            break
-
-        title = article['title'].strip()
-        source_url = article['url'].strip()
-        title_key = title[:60].lower()
-
-        if not title or title_key in seen_in_scan or _is_duplicate(title, source_url):
-            summary['skipped_duplicates'] += 1
-            log(f"  [dup] {title[:70]}")
-            continue
-        seen_in_scan.add(title_key)
-
-        try:
-            article_text = _fetch_article_text(source_url)
-            if len(article_text) < 80:
-                log(f"  [skip — too short] {title[:70]}")
-                summary['skipped_not_case'] += 1
-                continue
-
-            log(f"🔍 AI analyzing: {title[:65]}...")
-            analysis = analyze_case(title, article_text)
-
-            if analysis is None:
-                log(f"  ✗ AI returned no result")
-                summary['skipped_not_case'] += 1
-                continue
-
-            if not analysis.get('is_case', False):
-                log(f"  ✗ Not a case — skipped")
-                summary['skipped_not_case'] += 1
-                continue
-
-            _process_case(
-                analysis=analysis,
-                source_url=source_url,
-                source_name=article['source'],
-                published_date=article.get('published'),
-                article_text=article_text,
-            )
-        except Exception as e:
-            current_app.logger.error(f"[ERROR] '{title[:50]}': {e}")
-            log(f"  ❌ Error: {e}")
-            db.session.rollback()
-            continue
 
     log(f"━━━ DONE: {summary['new_cases']} cases · "
         f"{summary['lawyers_found']} lawyers · "
         f"{summary['lawyers_with_email']} with email · "
-        f"{summary['skipped_not_case']} filtered ━━━")
+        f"{summary['skipped_duplicates']} duplicates skipped ━━━")
     return summary
-
-
-# ── Legacy aliases (for imports elsewhere) ────────────────────────────────────
-
-def fetch_news(query, days=15, source_name=None):
-    return _fetch_bing(query, source_name=source_name, days=days)
-
-
-def fetch_rss_direct(feed_url, source_name, days=15):
-    return _fetch_rss(feed_url, source_name, days=days)
-
-
-def fetch_article_text(url):
-    return _fetch_article_text(url)
-
-
-def find_lawyer_email(name, firm):
-    email, linkedin, source = _discover_contacts(name, firm)
-    return email, linkedin, source
