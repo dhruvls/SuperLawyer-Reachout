@@ -1,4 +1,6 @@
 import json
+import re
+from datetime import date
 from google import genai
 from google.genai import types
 from flask import current_app
@@ -69,68 +71,163 @@ def _parse_json(text: str):
 
 def discover_cases_grounded() -> list:
     """
-    Use Gemma 4 + Google Search grounding to find trending Indian legal cases
-    from the past 7 days — replaces RSS + keyword filter + AI validation in one call.
+    Three targeted Gemma 4 + Google Search calls covering different case types.
+    Results are merged and deduplicated by case name.
 
-    Returns a list of case dicts (same shape as analyze_case output).
+    Lawyer filter REMOVED — cases with no lawyers in the article are still
+    returned; discover_lawyers_grounded() will find them in a follow-up search.
     """
-    prompt = """Search Google News India for the most recent and significant Indian legal cases
-from the past 7 days (today's context matters — use search to find current news).
+    today = date.today().strftime('%B %d, %Y')
 
-Focus on:
-- Supreme Court of India judgments, orders, hearings
-- High Court significant orders (Delhi, Bombay, Madras, Calcutta, etc.)
-- NCLT / NCLAT insolvency & corporate matters
-- SEBI, CCI, NGT regulatory orders
-- Notable criminal matters, bail orders, constitutional petitions
+    # Three targeted searches covering the full spectrum of Indian courts
+    targets = [
+        (
+            "Supreme Court & Constitutional",
+            """\
+- Supreme Court of India judgments, orders, hearings (any bench)
+- Constitutional petitions (Article 32, Article 226)
+- PIL hearings with substantive orders or directions
+- Five-judge / seven-judge Constitution bench matters
+- Electoral, fundamental rights, criminal appeals admitted/decided by SC
+- SLP (Special Leave Petition) disposals with significant directions"""
+        ),
+        (
+            "High Courts & Regulatory Tribunals",
+            """\
+- Delhi, Bombay, Madras, Calcutta, Allahabad, Karnataka, Telangana High Courts
+- NCLT / NCLAT — insolvency, liquidation, resolution plan approvals
+- SEBI enforcement orders and SAT (Securities Appellate Tribunal) appeals
+- CCI (Competition Commission) orders and NCLAT competition appeals
+- NGT (National Green Tribunal) orders
+- ITAT (Income Tax Appellate Tribunal) significant tax rulings
+- DRT / DRAT debt recovery matters
+- TDSAT, TRAI regulatory orders"""
+        ),
+        (
+            "Criminal, Bail, PMLA & Corporate Fraud",
+            """\
+- High-profile bail orders granted or denied (any court)
+- Sessions court significant criminal verdicts
+- PMLA / ED arrest, remand, attachment orders
+- CBI / NIA chargesheet filings and trial court proceedings
+- Corporate fraud and white-collar crime hearings
+- Contempt of court proceedings (civil or criminal)
+- Extradition matters and international mutual legal assistance"""
+        ),
+    ]
 
-For each case found, I need ONLY cases where named advocates/lawyers are mentioned.
-Extract 8-12 cases maximum.
+    all_cases: list = []
+    seen_keys: set = set()
 
-Return ONLY a JSON array, no markdown:
+    for label, focus in targets:
+        prompt = f"""Today is {today}. Search Google News India right now for the most recent Indian legal cases from the past 7 days.
+
+CATEGORY: {label}
+Search for proceedings in these specific courts and case types:
+{focus}
+
+Rules for what counts as a valid case:
+- Must be a real court/tribunal proceeding (judgment delivered, order passed, bail granted/denied, hearing concluded with directions)
+- Must have specific named parties — not just "government vs company"
+- Exclude: law firm rankings, judicial appointments, legislative debates, opinion pieces, law college events
+
+Extract up to 6 cases for this category.
+For lawyers: include whoever is named in the news — advocates, senior advocates, SG, ASG, amicus curiae.
+If the article does not name any lawyers, still include the case with "lawyers": [] — we will find them separately.
+
+Return ONLY a JSON array, no markdown, no explanation:
 [
-  {
+  {{
     "case_name": "Party A v. Party B",
-    "court": "Supreme Court of India",
-    "summary": "2-3 sentence factual summary of what happened",
+    "court": "Exact court or tribunal name",
+    "summary": "2-3 sentence factual summary of what specifically happened in this proceeding",
     "practice_area": "one of: constitutional/corporate/criminal/tax/ip/environmental/cyber/insolvency/banking/labour/family/real_estate/media/general",
     "status": "pending or decided or reserved",
     "trending_score": 0.0,
     "source_url": "https://...",
-    "source_name": "LiveLaw or Bar and Bench or The Hindu or other",
+    "source_name": "LiveLaw or Bar and Bench or The Hindu or Economic Times or other",
     "lawyers": [
-      {"name": "Full Name", "firm": "Firm name or empty", "role": "Senior Advocate / Advocate / ASG / SG", "side": "petitioner or respondent or unknown"}
+      {{"name": "Full Name", "firm": "Firm name or empty string", "role": "Senior Advocate / Advocate / ASG / SG / Amicus", "side": "petitioner or respondent or unknown"}}
     ]
-  }
-]"""
+  }}
+]
 
-    raw = _generate(prompt, grounding=True)
-    if not raw:
-        return []
-    result = _parse_json(raw)
-    if not isinstance(result, list):
-        current_app.logger.warning("[AI] discover_cases_grounded: unexpected format")
-        return []
-    # Clean out entries without lawyers
-    return [c for c in result if isinstance(c, dict) and c.get('lawyers') and c.get('case_name')]
+If no cases found for this category, return: []"""
+
+        try:
+            raw = _generate(prompt, grounding=True)
+            if not raw:
+                current_app.logger.warning(f"[AI] discover_cases_grounded ({label}): empty response")
+                continue
+            result = _parse_json(raw)
+            if not isinstance(result, list):
+                current_app.logger.warning(f"[AI] discover_cases_grounded ({label}): unexpected format")
+                continue
+            added = 0
+            for c in result:
+                if not isinstance(c, dict) or not c.get('case_name'):
+                    continue
+                key = c['case_name'][:60].lower().strip()
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    # Ensure lawyers key always exists
+                    c.setdefault('lawyers', [])
+                    all_cases.append(c)
+                    added += 1
+            current_app.logger.info(f"[AI] discover_cases_grounded ({label}): {added} cases")
+        except Exception as e:
+            current_app.logger.error(f"[AI] discover_cases_grounded ({label}): {e}")
+            continue
+
+    # Sort by trending_score descending so highest-impact cases are processed first
+    all_cases.sort(key=lambda c: c.get('trending_score', 0), reverse=True)
+    current_app.logger.info(f"[AI] discover_cases_grounded: {len(all_cases)} total cases across 3 searches")
+    return all_cases
 
 
 def discover_lawyers_grounded(case_name: str, court: str) -> list:
     """
-    Use Gemma 4 + Google Search to find advocates appearing in a specific case.
-    Supplements the existing multi-source lawyer discovery.
+    Aggressive Gemma 4 + Google Search call to find ALL advocates in a case.
+    This is the primary recovery path when Prompt 1 returned no lawyers.
+    Searches LiveLaw, Bar & Bench, IndianKanoon, SCC Online, and news sources.
     """
-    prompt = f"""Search Google for lawyers and advocates appearing in this Indian legal case:
+    prompt = f"""Search Google thoroughly for lawyers and advocates appearing in this Indian legal case:
+
 Case: "{case_name}"
 Court: {court or 'Indian court'}
 
-Find the names of Senior Advocates, Advocates, Solicitor General, ASG, or amicus curiae
-who are representing parties. Only include people whose full names appear in news or court records.
+Search these sources specifically:
+- livelaw.in — India's leading legal news site
+- barandbench.com — Bar and Bench legal news
+- indiankanoon.org — Indian court judgments database
+- scconline.com — SCC Online case law
+- sci.gov.in — Supreme Court of India website
+- Any news coverage mentioning this case
 
-Return ONLY a JSON array, no markdown:
-[{{"name": "Full Name", "firm": "Firm or empty string", "role": "Senior Advocate / Advocate / etc.", "side": "petitioner or respondent or unknown"}}]
+Find ALL of the following who appear in this case:
+- Senior Advocates (Sr. Adv. / Senior Counsel)
+- Advocates / Counsel
+- Solicitor General of India (SG)
+- Additional Solicitor General (ASG)
+- Advocate General (AG) of any state
+- Amicus Curiae
+- Government Pleader / State Counsel
+- Special Public Prosecutor
 
-If none found, return: []"""
+For EACH person found:
+- Use their full name as it appears in the source
+- Note which side they represent (petitioner/appellant/respondent/state/unknown)
+- Note their firm if mentioned
+- Note their exact role/designation
+
+STRICT RULES:
+- Do NOT include judges, justices, or judicial officers
+- Do NOT include the parties/litigants themselves
+- Do NOT fabricate or guess names — only include names that actually appear in search results
+- If you genuinely cannot find any lawyer names, return []
+
+Return ONLY a JSON array, no markdown, no explanation:
+[{{"name": "Full Name", "firm": "Firm name or empty string", "role": "Senior Advocate / Advocate / ASG / SG / etc.", "side": "petitioner or respondent or amicus or unknown"}}]"""
 
     raw = _generate(prompt, grounding=True)
     if not raw:
@@ -138,8 +235,14 @@ If none found, return: []"""
     result = _parse_json(raw)
     if not isinstance(result, list):
         return []
-    return [l for l in result if isinstance(l, dict) and l.get('name')
-            and l['name'].lower() not in ('unknown', 'n/a', '')]
+    blocked = {'unknown', 'n/a', '', 'not found', 'not mentioned', 'not available',
+               'not specified', 'unnamed', 'various'}
+    return [
+        l for l in result
+        if isinstance(l, dict) and l.get('name')
+        and l['name'].lower().strip() not in blocked
+        and len(l['name'].strip()) > 3
+    ]
 
 
 def discover_contact_grounded(name: str, firm: str) -> tuple[str | None, str | None]:
@@ -148,16 +251,24 @@ def discover_contact_grounded(name: str, firm: str) -> tuple[str | None, str | N
     Returns (email, linkedin_url).
     """
     firm_str = f' at {firm}' if firm and firm.lower() not in ('', 'n/a', 'unknown firm') else ''
-    prompt = f"""Search Google for the contact information of Indian lawyer/advocate: {name}{firm_str}
+    prompt = f"""Search Google for the professional contact information of this Indian lawyer/advocate:
+Name: {name}{firm_str}
 
-Look on:
-- Their law firm's website (team/contact/people page)
-- LawRato.com, AdvocateKhoj.com, JustDial lawyer profiles
-- Bar council directories
-- LinkedIn profile
+Search these sources in order:
+1. Their law firm's official website — look for /team, /people, /attorneys, /contact, /partners pages
+2. LawRato.com lawyer profiles
+3. AdvocateKhoj.com bar directory
+4. JustDial lawyer listings
+5. Bar Council of India or State Bar Council directories
+6. LinkedIn profile (linkedin.com/in/...)
+7. Any legal directory or professional profile page
 
-Return ONLY this JSON, no markdown:
-{{"email": "email@domain.com or null", "linkedin_url": "https://linkedin.com/in/... or null"}}"""
+Only return a real email address you actually found on one of these pages.
+Do NOT guess or construct email addresses from name patterns.
+Do NOT return generic firm contact emails (like info@firm.com) unless it's clearly the lawyer's direct contact.
+
+Return ONLY this JSON, no markdown, no explanation:
+{{"email": "actual.email@domain.com or null", "linkedin_url": "https://linkedin.com/in/profilename or null"}}"""
 
     raw = _generate(prompt, grounding=True)
     if not raw:
@@ -167,10 +278,14 @@ Return ONLY this JSON, no markdown:
         return None, None
     email = result.get('email')
     linkedin = result.get('linkedin_url')
-    # Validate email format
-    import re
-    if email and not re.match(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', email):
+    # Validate — reject nulls passed as strings, generic emails, bad formats
+    _NULL_STRINGS = {'null', 'none', 'n/a', '', 'not found', 'not available'}
+    if email and str(email).lower().strip() in _NULL_STRINGS:
         email = None
+    if email and not re.match(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', str(email)):
+        email = None
+    if linkedin and str(linkedin).lower().strip() in _NULL_STRINGS:
+        linkedin = None
     if linkedin and 'linkedin.com' not in str(linkedin):
         linkedin = None
     return email or None, linkedin or None

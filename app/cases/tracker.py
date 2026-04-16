@@ -675,33 +675,34 @@ def scan_for_cases(progress_cb=None) -> dict:
 
         log(f"  ✓ {case_name[:60]}")
         log(f"    Court: {court or 'unknown'}  |  Area: {practice}  |  Score: {score:.2f}")
-        log(f"    AI found {len(ai_lawyers)} lawyer(s): "
-            + ', '.join(l.get('name', '?') for l in ai_lawyers[:5]))
+        if ai_lawyers:
+            log(f"    Prompt 1 found {len(ai_lawyers)} lawyer(s): "
+                + ', '.join(l.get('name', '?') for l in ai_lawyers[:5]))
+        else:
+            log(f"    Prompt 1 found no lawyers — will search separately")
 
-        if not ai_lawyers:
-            log(f"  ✗ No lawyers — skipped")
-            summary['skipped_no_lawyers'] += 1
-            return
-
-        # Stage 1a: grounded lawyer enrichment
-        log(f"  👤 Grounded lawyer search for: {case_name[:50]}...")
+        # Stage 1a: grounded lawyer search (always run — primary recovery for empty Prompt 1)
+        log(f"  👤 Grounded lawyer search: {case_name[:50]}...")
         try:
             grounded_lawyers = discover_lawyers_grounded(case_name, court)
-            log(f"    Grounded found {len(grounded_lawyers)} additional lawyers")
+            log(f"    Grounded found {len(grounded_lawyers)} lawyer(s)"
+                + (': ' + ', '.join(l.get('name', '?') for l in grounded_lawyers[:5])
+                   if grounded_lawyers else ''))
         except Exception as e:
             log(f"    ⚠ Grounded lawyer search failed: {e}")
             grounded_lawyers = []
 
         # Stage 1b: Bing + IndianKanoon enrichment
+        combined = ai_lawyers + grounded_lawyers
         verified_lawyers = _multi_source_lawyers(
-            case_name or source_url, ai_lawyers + grounded_lawyers,
+            case_name or source_url, combined,
             case_name=case_name
         )
         log(f"    → {len(verified_lawyers)} unique lawyers "
             f"({sum(1 for l in verified_lawyers if l['verified'])} verified)")
 
         if not verified_lawyers:
-            log(f"  ✗ All lawyers filtered — skipped")
+            log(f"  ✗ No lawyers found across all sources — skipped")
             summary['skipped_no_lawyers'] += 1
             return
 
