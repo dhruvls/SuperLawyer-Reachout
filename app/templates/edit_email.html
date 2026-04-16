@@ -23,18 +23,41 @@
                 <form method="POST">
                     <div class="mb-3">
                         <label class="form-label fw-bold">To</label>
+                        {% if email.lawyer %}
+                        <div class="d-flex align-items-center gap-2 flex-wrap">
+                            <span class="form-control-plaintext py-0 mb-0 w-auto">
+                                {{ email.lawyer.name }}
+                                {% if email.lawyer.email %}
+                                &lt;{{ email.lawyer.email }}&gt;
+                                {% else %}
+                                <span class="text-danger">(no email address)</span>
+                                {% endif %}
+                            </span>
+                            <button type="button" class="btn btn-link btn-sm p-0 text-secondary"
+                                    onclick="document.getElementById('change-email-box').classList.toggle('d-none')">
+                                <i class="bi bi-pencil-square"></i> change
+                            </button>
+                        </div>
+                        <div id="change-email-box" class="d-none mt-2">
+                            <form method="POST" action="{{ url_for('cases.update_lawyer_email', lawyer_id=email.lawyer.id) }}"
+                                  class="d-flex gap-2 align-items-center">
+                                <input type="hidden" name="next" value="{{ request.url }}">
+                                <input type="email" name="email" class="form-control form-control-sm"
+                                       placeholder="new@email.com"
+                                       value="{{ email.lawyer.email or '' }}"
+                                       style="max-width:280px;" required>
+                                <button type="submit" class="btn btn-sm btn-primary">Save</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary"
+                                        onclick="document.getElementById('change-email-box').classList.add('d-none')">
+                                    Cancel
+                                </button>
+                            </form>
+                        </div>
+                        {% else %}
                         <p class="form-control-plaintext">
-                            {% if email.lawyer %}
-                            {{ email.lawyer.name }}
-                            {% if email.lawyer.email %}
-                            &lt;{{ email.lawyer.email }}&gt;
-                            {% else %}
-                            <span class="text-danger">(no email address)</span>
-                            {% endif %}
-                            {% else %}
                             <span class="text-muted fst-italic">Lawyer removed (case was rescanned)</span>
-                            {% endif %}
                         </p>
+                        {% endif %}
                     </div>
                     <div class="mb-3">
                         <label for="subject" class="form-label fw-bold">Subject</label>

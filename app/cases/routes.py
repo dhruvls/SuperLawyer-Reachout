@@ -421,7 +421,8 @@ def update_lawyer_email(lawyer_id):
         lawyer.email_source = 'Manual'
         db.session.commit()
         flash(f'Email updated for {lawyer.name}.', 'success')
-    return redirect(request.referrer or url_for('cases.case_detail', case_id=lawyer.case_id))
+    next_url = request.form.get('next') or request.referrer or url_for('cases.case_detail', case_id=lawyer.case_id)
+    return redirect(next_url)
 
 
 # ─── Export ──────────────────────────────────────────────────
