@@ -210,26 +210,45 @@
 
         {% else %}
         <!-- ── Standard 4-Step Pipeline ── -->
+        {#
+            pstep = which step is currently active:
+              1 = drafting primary  (status=draft, type=primary OR status=failed)
+              3 = follow-up needed  (status=pending_followup OR type=followup)
+              4 = complete          (status=followed_up OR type=followup+sent)
+        #}
+        {% set ns = namespace(pstep=1) %}
+        {% if email.status == 'followed_up' or (email.email_type == 'followup' and email.status == 'sent') %}
+            {% set ns.pstep = 4 %}
+        {% elif email.status == 'pending_followup' or email.email_type == 'followup' %}
+            {% set ns.pstep = 3 %}
+        {% endif %}
+
         <div class="card shadow-sm mb-3">
             <div class="card-header bg-white">
                 <h6 class="mb-0"><i class="bi bi-signpost-split"></i> Pipeline Stage</h6>
             </div>
             <div class="card-body p-0">
                 <div class="list-group list-group-flush">
-                    <div class="list-group-item d-flex align-items-center gap-2 {{ 'list-group-item-primary' if email.email_type == 'primary' and email.status == 'draft' }}">
-                        <i class="bi bi-{{ 'check-circle-fill text-success' if email.email_type == 'primary' and email.status != 'draft' else '1-circle-fill text-primary' if email.email_type == 'primary' and email.status == 'draft' else 'check-circle-fill text-success' }}"></i>
+                    <!-- Step 1: Draft -->
+                    <div class="list-group-item d-flex align-items-center gap-2
+                        {{ 'list-group-item-primary' if ns.pstep == 1 }}">
+                        <i class="bi bi-{{ 'check-circle-fill text-success' if ns.pstep > 1 else '1-circle-fill text-primary' }}"></i>
                         <small>Draft primary email</small>
                     </div>
-                    <div class="list-group-item d-flex align-items-center gap-2 {{ 'list-group-item-primary' if email.status == 'draft' and email.email_type == 'primary' }}">
-                        <i class="bi bi-{{ 'check-circle-fill text-success' if email.status in ('sent', 'pending_followup', 'followed_up') else '2-circle text-muted' }}"></i>
+                    <!-- Step 2: Send (never "active" — transitions instantly to pending_followup) -->
+                    <div class="list-group-item d-flex align-items-center gap-2">
+                        <i class="bi bi-{{ 'check-circle-fill text-success' if ns.pstep > 2 else '2-circle text-muted' }}"></i>
                         <small>Send to lawyer</small>
                     </div>
-                    <div class="list-group-item d-flex align-items-center gap-2 {{ 'list-group-item-warning' if email.status == 'pending_followup' }}">
-                        <i class="bi bi-{{ 'check-circle-fill text-success' if email.status == 'followed_up' else 'clock text-warning' if email.status == 'pending_followup' else '3-circle text-muted' }}"></i>
-                        <small>Follow-up{% if email.followup_date and email.status == 'pending_followup' %} — due {{ email.followup_date.strftime('%b %d') }}{% endif %}</small>
+                    <!-- Step 3: Follow-up -->
+                    <div class="list-group-item d-flex align-items-center gap-2
+                        {{ 'list-group-item-warning' if ns.pstep == 3 }}">
+                        <i class="bi bi-{{ 'check-circle-fill text-success' if ns.pstep == 4 else 'clock text-warning' if ns.pstep == 3 else '3-circle text-muted' }}"></i>
+                        <small>Follow-up{% if email.followup_date and ns.pstep == 3 %} — due {{ email.followup_date.strftime('%b %d') }}{% endif %}</small>
                     </div>
+                    <!-- Step 4: Complete -->
                     <div class="list-group-item d-flex align-items-center gap-2">
-                        <i class="bi bi-{{ 'check-circle-fill text-success' if email.status == 'followed_up' else '4-circle text-muted' }}"></i>
+                        <i class="bi bi-{{ 'check-circle-fill text-success' if ns.pstep == 4 else '4-circle text-muted' }}"></i>
                         <small>Complete</small>
                     </div>
                 </div>
