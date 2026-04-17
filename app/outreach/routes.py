@@ -78,7 +78,17 @@ def edit_email(email_id):
         flash('Email updated.', 'success')
         return redirect(url_for('outreach.edit_email', email_id=email.id))
 
-    return render_template('edit_email.html', email=email)
+    # For interview emails, load which steps are already sent for the pipeline sidebar
+    int_types_done: set = set()
+    if email.email_type and email.email_type.startswith('int_') and email.lawyer_id:
+        int_emails = OutreachEmail.query.filter(
+            OutreachEmail.lawyer_id == email.lawyer_id,
+            OutreachEmail.user_id == current_user.id,
+            OutreachEmail.email_type.like('int_%'),
+        ).all()
+        int_types_done = {e.email_type for e in int_emails if e.status in ('sent', 'followed_up')}
+
+    return render_template('edit_email.html', email=email, int_types_done=int_types_done)
 
 
 @outreach_bp.route('/outreach/<int:email_id>/send', methods=['POST'])
@@ -143,6 +153,59 @@ def retry_email(email_id):
     outreach.status = 'draft'
     db.session.commit()
     flash('Email reset to draft. Edit and resend.', 'info')
+    return redirect(url_for('outreach.edit_email', email_id=outreach.id))
+
+
+@outreach_bp.route('/outreach/interview/<int:lawyer_id>/step/<int:step>', methods=['POST'])
+@login_required
+def generate_interview_step(lawyer_id, step):
+    """Generate a draft email for a specific Super Lawyer interview campaign step."""
+    from app.outreach.interview_templates import INTERVIEW_STEPS
+    from app.ai.gemma import personalize_interview_email, generate_interview_questionnaire
+
+    lawyer = db.get_or_404(Lawyer, lawyer_id)
+    case = lawyer.case
+
+    if step not in INTERVIEW_STEPS:
+        flash(f'Step {step} is an internal action — no email to generate.', 'warning')
+        return redirect(url_for('cases.case_detail', case_id=case.id))
+
+    step_data = INTERVIEW_STEPS[step]
+    template_body = step_data['body']
+
+    # Step 5: generate AI questionnaire and embed it in the template
+    if step == 5:
+        questionnaire = generate_interview_questionnaire(
+            lawyer_name=lawyer.name,
+            role=lawyer.role or '',
+            firm=lawyer.firm or '',
+            practice_area=case.practice_area or '',
+            court=case.court or '',
+        )
+        template_body = template_body.replace('{questionnaire}', questionnaire)
+
+    # Personalize the template with lawyer-specific details
+    body = personalize_interview_email(
+        step_name=step_data['name'],
+        template_body=template_body,
+        lawyer_name=lawyer.name,
+        firm=lawyer.firm or '',
+        role=lawyer.role or '',
+    )
+
+    outreach = OutreachEmail(
+        lawyer_id=lawyer.id,
+        case_id=case.id,
+        user_id=current_user.id,
+        subject=step_data['subject'],
+        body=body,
+        status='draft',
+        email_type=step_data['email_type'],
+    )
+    db.session.add(outreach)
+    db.session.commit()
+
+    flash(f'Step {step} — {step_data["name"]} email drafted.', 'success')
     return redirect(url_for('outreach.edit_email', email_id=outreach.id))
 
 

@@ -191,9 +191,29 @@ def case_detail(case_id):
             'followup': followup,
         }
 
+    # Build per-lawyer interview campaign status
+    from app.outreach.interview_templates import INTERVIEW_ALL_STEPS
+    lawyer_interview = {}
+    for lawyer in case.lawyers:
+        int_emails = [e for e in emails
+                      if e.lawyer_id == lawyer.id and e.email_type
+                      and e.email_type.startswith('int_')]
+        int_types_done = {e.email_type for e in int_emails
+                          if e.status in ('sent', 'followed_up')}
+        int_types_started = {e.email_type for e in int_emails}
+        # Latest draft email for quick "edit" link
+        int_drafts = {e.email_type: e for e in int_emails if e.status == 'draft'}
+        lawyer_interview[lawyer.id] = {
+            'types_done': int_types_done,
+            'types_started': int_types_started,
+            'drafts': int_drafts,
+        }
+
     return render_template('case_detail.html', case=case, analysis=analysis,
                            emails=emails, is_bookmarked=is_bookmarked,
-                           lawyer_outreach=lawyer_outreach)
+                           lawyer_outreach=lawyer_outreach,
+                           lawyer_interview=lawyer_interview,
+                           interview_steps=INTERVIEW_ALL_STEPS)
 
 
 @cases_bp.route('/cases/<int:case_id>/update-status', methods=['POST'])

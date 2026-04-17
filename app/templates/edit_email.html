@@ -12,73 +12,80 @@
     <div class="col-lg-8">
         <div class="card shadow-sm">
             <div class="card-header bg-white d-flex justify-content-between align-items-center">
-                <h5 class="mb-0">
-                    {% if email.status == 'draft' %}Edit Draft{% else %}View Email{% endif %}
-                </h5>
+                <h5 class="mb-0">Edit Email</h5>
                 <span class="badge bg-{{ 'success' if email.status == 'sent' else 'warning' if email.status == 'pending_followup' else 'secondary' }}">
                     {{ email.status.replace('_', ' ') }}
                 </span>
             </div>
             <div class="card-body">
+
+                <!-- ── To section (standalone — NOT inside the save form) ── -->
+                <div class="mb-3">
+                    <label class="form-label fw-bold">To</label>
+                    {% if email.lawyer %}
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                        <span class="form-control-plaintext py-0 mb-0 w-auto">
+                            {{ email.lawyer.name }}
+                            {% if email.lawyer.email %}
+                            &lt;{{ email.lawyer.email }}&gt;
+                            {% else %}
+                            <span class="text-danger">(no email address)</span>
+                            {% endif %}
+                        </span>
+                        <button type="button" class="btn btn-link btn-sm p-0 text-secondary"
+                                onclick="document.getElementById('change-email-box').classList.toggle('d-none')">
+                            <i class="bi bi-pencil-square"></i> change
+                        </button>
+                    </div>
+                    <!-- Change-email form is a SEPARATE top-level form — no nesting -->
+                    <div id="change-email-box" class="d-none mt-2">
+                        <form method="POST" action="{{ url_for('cases.update_lawyer_email', lawyer_id=email.lawyer.id) }}"
+                              class="d-flex gap-2 align-items-center">
+                            <input type="hidden" name="next" value="{{ request.url }}">
+                            <input type="email" name="email" class="form-control form-control-sm"
+                                   placeholder="new@email.com"
+                                   value="{{ email.lawyer.email or '' }}"
+                                   style="max-width:280px;" required>
+                            <button type="submit" class="btn btn-sm btn-primary">Save</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary"
+                                    onclick="document.getElementById('change-email-box').classList.add('d-none')">
+                                Cancel
+                            </button>
+                        </form>
+                    </div>
+                    {% else %}
+                    <p class="form-control-plaintext">
+                        <span class="text-muted fst-italic">Lawyer removed (case was rescanned)</span>
+                    </p>
+                    {% endif %}
+                </div>
+
+                <!-- ── Save form (subject + body only — no nested forms) ── -->
                 <form method="POST">
                     <div class="mb-3">
-                        <label class="form-label fw-bold">To</label>
-                        {% if email.lawyer %}
-                        <div class="d-flex align-items-center gap-2 flex-wrap">
-                            <span class="form-control-plaintext py-0 mb-0 w-auto">
-                                {{ email.lawyer.name }}
-                                {% if email.lawyer.email %}
-                                &lt;{{ email.lawyer.email }}&gt;
-                                {% else %}
-                                <span class="text-danger">(no email address)</span>
-                                {% endif %}
-                            </span>
-                            <button type="button" class="btn btn-link btn-sm p-0 text-secondary"
-                                    onclick="document.getElementById('change-email-box').classList.toggle('d-none')">
-                                <i class="bi bi-pencil-square"></i> change
-                            </button>
-                        </div>
-                        <div id="change-email-box" class="d-none mt-2">
-                            <form method="POST" action="{{ url_for('cases.update_lawyer_email', lawyer_id=email.lawyer.id) }}"
-                                  class="d-flex gap-2 align-items-center">
-                                <input type="hidden" name="next" value="{{ request.url }}">
-                                <input type="email" name="email" class="form-control form-control-sm"
-                                       placeholder="new@email.com"
-                                       value="{{ email.lawyer.email or '' }}"
-                                       style="max-width:280px;" required>
-                                <button type="submit" class="btn btn-sm btn-primary">Save</button>
-                                <button type="button" class="btn btn-sm btn-outline-secondary"
-                                        onclick="document.getElementById('change-email-box').classList.add('d-none')">
-                                    Cancel
-                                </button>
-                            </form>
-                        </div>
-                        {% else %}
-                        <p class="form-control-plaintext">
-                            <span class="text-muted fst-italic">Lawyer removed (case was rescanned)</span>
-                        </p>
-                        {% endif %}
-                    </div>
-                    <div class="mb-3">
                         <label for="subject" class="form-label fw-bold">Subject</label>
-                        <input type="text" class="form-control" id="subject" name="subject" value="{{ email.subject }}"
-                            {{ 'readonly' if email.status != 'draft' }}>
+                        <input type="text" class="form-control" id="subject" name="subject"
+                               value="{{ email.subject }}">
                     </div>
                     <div class="mb-3">
                         <label for="body" class="form-label fw-bold">Body</label>
-                        <textarea class="form-control" id="body" name="body" rows="12"
-                            {{ 'readonly' if email.status != 'draft' }}>{{ email.body }}</textarea>
+                        <textarea class="form-control" id="body" name="body" rows="14">{{ email.body }}</textarea>
                     </div>
-                    {% if email.status == 'draft' %}
-                    <div class="d-flex gap-2">
-                        <button type="submit" class="btn btn-primary">
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                        {% if email.status != 'draft' %}
+                        <small class="text-muted fst-italic">
+                            <i class="bi bi-info-circle"></i>
+                            This email was already sent — saving updates the local record only.
+                        </small>
+                        {% endif %}
+                        <button type="submit" class="btn btn-primary ms-auto">
                             <i class="bi bi-save"></i> Save Changes
                         </button>
                         <a href="{{ url_for('outreach.outreach_list') }}" class="btn btn-outline-secondary">Cancel</a>
                     </div>
-                    {% endif %}
                 </form>
 
+                <!-- ── Status-based action buttons ── -->
                 {% if email.status == 'draft' %}
                     {% if email.lawyer and email.lawyer.email %}
                     <form method="POST" action="{{ url_for('outreach.send', email_id=email.id) }}" class="mt-3">
@@ -138,13 +145,71 @@
                     {% endif %}
                 </div>
                 {% endif %}
+
             </div>
         </div>
     </div>
 
-    <!-- Sidebar Info -->
+    <!-- ── Sidebar ── -->
     <div class="col-lg-4">
-        <!-- Pipeline Stage -->
+
+        {% set is_interview = email.email_type and email.email_type.startswith('int_') %}
+
+        {% if is_interview %}
+        <!-- ── 9-Step Interview Pipeline ── -->
+        {% set STEP_MAP = {
+            'int_invite':    1,
+            'int_cv_ack':    2,
+            'int_cv_remind': 3,
+            'int_quest':     5,
+            'int_dl_remind': 6,
+            'int_resp_ack':  7,
+            'int_published': 9
+        } %}
+        {% set current_step = STEP_MAP.get(email.email_type, 0) %}
+        <div class="card shadow-sm mb-3">
+            <div class="card-header bg-white">
+                <h6 class="mb-0"><i class="bi bi-camera-video"></i> Interview Pipeline</h6>
+            </div>
+            <div class="card-body p-0">
+                <div class="list-group list-group-flush" style="font-size:.85rem;">
+                    {% set steps = [
+                        (1, 'Interview Invite',      'int_invite',    false),
+                        (2, 'CV/Bio Received',       'int_cv_ack',    false),
+                        (3, 'CV/Bio Reminder',       'int_cv_remind', false),
+                        (4, 'Prepare Questionnaire', none,            true),
+                        (5, 'Send Questionnaire',    'int_quest',     false),
+                        (6, 'Deadline Reminder',     'int_dl_remind', false),
+                        (7, 'Response Received',     'int_resp_ack',  false),
+                        (8, 'Publish Interview',     none,            true),
+                        (9, 'Interview Published',   'int_published', false),
+                    ] %}
+                    {% for snum, sname, stype, sinternal in steps %}
+                    {% set is_current = (snum == current_step) %}
+                    {% set is_done = (stype and stype in int_types_done) or (snum < current_step and not sinternal) %}
+                    <div class="list-group-item py-2 d-flex align-items-center gap-2
+                        {{ 'list-group-item-primary' if is_current else '' }}">
+                        {% if sinternal %}
+                        <i class="bi bi-clipboard-check text-secondary"></i>
+                        {% elif is_done %}
+                        <i class="bi bi-check-circle-fill text-success"></i>
+                        {% elif is_current %}
+                        <i class="bi bi-record-circle text-primary"></i>
+                        {% else %}
+                        <i class="bi bi-circle text-muted"></i>
+                        {% endif %}
+                        <span class="{{ 'fw-semibold' if is_current else 'text-muted' if not is_done and not is_current else '' }}">
+                            Step {{ snum }} — {{ sname }}
+                        </span>
+                        {% if sinternal %}<span class="badge bg-light text-dark ms-auto border" style="font-size:.65rem;">internal</span>{% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        {% else %}
+        <!-- ── Standard 4-Step Pipeline ── -->
         <div class="card shadow-sm mb-3">
             <div class="card-header bg-white">
                 <h6 class="mb-0"><i class="bi bi-signpost-split"></i> Pipeline Stage</h6>
@@ -170,6 +235,7 @@
                 </div>
             </div>
         </div>
+        {% endif %}
 
         <div class="card shadow-sm mb-3">
             <div class="card-header bg-white">
@@ -177,7 +243,7 @@
             </div>
             <div class="card-body">
                 <p><strong>Type:</strong>
-                    <span class="badge bg-{{ 'info' if email.email_type == 'primary' else 'warning text-dark' }}">
+                    <span class="badge bg-{{ 'info' if email.email_type == 'primary' else 'warning text-dark' if email.email_type == 'followup' else 'secondary' }}">
                         {{ email.email_type }}
                     </span>
                 </p>

@@ -303,6 +303,57 @@
                         </div>
                         {% endif %}
                     </div>
+
+                    <!-- ── Interview Campaign ── -->
+                    {% set li = lawyer_interview.get(lawyer.id, {}) %}
+                    {% set int_done = li.get('types_done', set()) %}
+                    {% set int_started = li.get('types_started', set()) %}
+                    {% set int_drafts = li.get('drafts', {}) %}
+                    <div class="mt-3 border-top pt-2">
+                        <div class="d-flex justify-content-between align-items-center mb-1">
+                            <small class="fw-semibold text-secondary"><i class="bi bi-camera-video"></i> Written Interview Campaign</small>
+                        </div>
+                        {% for s in interview_steps %}
+                        {% set snum = s.step %}
+                        {% set sname = s.name %}
+                        {% set stype = s.email_type %}
+                        {% set sinternal = s.internal %}
+                        {% set s_done = (not sinternal) and stype and stype in int_done %}
+                        {% set s_started = (not sinternal) and stype and stype in int_started %}
+                        {% set s_draft = (not sinternal) and stype and stype in int_drafts %}
+                        <div class="d-flex align-items-center gap-1 py-1" style="font-size:.8rem;">
+                            {% if sinternal %}
+                            <i class="bi bi-clipboard text-secondary" style="width:14px;"></i>
+                            <span class="text-muted">{{ snum }}. {{ sname }}</span>
+                            <span class="badge bg-light text-dark border ms-auto" style="font-size:.6rem;">internal</span>
+                            {% elif s_done %}
+                            <i class="bi bi-check-circle-fill text-success" style="width:14px;"></i>
+                            <span class="text-muted text-decoration-line-through">{{ snum }}. {{ sname }}</span>
+                            {% elif s_draft %}
+                            <i class="bi bi-file-earmark text-secondary" style="width:14px;"></i>
+                            <span>{{ snum }}. {{ sname }}</span>
+                            <a href="{{ url_for('outreach.edit_email', email_id=int_drafts[stype].id) }}"
+                               class="btn btn-outline-primary btn-sm py-0 px-1 ms-auto" style="font-size:.7rem;">
+                                Edit
+                            </a>
+                            {% else %}
+                            <i class="bi bi-circle text-muted" style="width:14px;"></i>
+                            <span class="text-muted">{{ snum }}. {{ sname }}</span>
+                            {% if not sinternal %}
+                            <form method="POST"
+                                  action="{{ url_for('outreach.generate_interview_step', lawyer_id=lawyer.id, step=snum) }}"
+                                  class="ms-auto">
+                                <button type="submit" class="btn btn-outline-secondary btn-sm py-0 px-1"
+                                        style="font-size:.7rem;"
+                                        {% if not lawyer.email %}disabled title="Add email first"{% endif %}>
+                                    Draft
+                                </button>
+                            </form>
+                            {% endif %}
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
                 </div>
                 {% endif %}
                 {% else %}

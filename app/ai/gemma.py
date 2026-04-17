@@ -451,6 +451,100 @@ Return ONLY this JSON (no markdown):
     return result
 
 
+def personalize_interview_email(step_name: str, template_body: str, lawyer_name: str,
+                                firm: str, role: str) -> str:
+    """
+    Lightly personalize a Super Lawyer interview template for a specific lawyer.
+    Replaces {lawyer_name} / {your_name} placeholders and adds ONE specific sentence
+    referencing their actual work. Keeps the rest verbatim — institutional template.
+    Returns the personalized body text (plain text, not JSON).
+    """
+    prompt = f"""You are personalizing a written interview invitation email for a specific lawyer.
+
+Lawyer: {lawyer_name}
+Firm: {firm or 'Independent'}
+Role: {role or 'Advocate'}
+Interview Step: {step_name}
+
+Original template:
+{template_body}
+
+Instructions:
+1. Replace {{lawyer_name}} with "{lawyer_name}" (address as "Sir" if name/gender unclear)
+2. Replace {{your_name}} with "Anshi Mudgal"
+3. Add ONE specific sentence (1 line) referencing their actual legal work, practice area, or notable cases — insert it naturally into the opening paragraph
+4. Keep everything else EXACTLY as written — same structure, same sign-off, same links
+5. Do NOT rewrite, summarize, or restructure the template
+6. Return ONLY the email body text — no subject line, no JSON, no markdown fences
+
+Personalized email body:"""
+
+    try:
+        raw = _generate(prompt)
+        if raw and len(raw.strip()) > 50:
+            return raw.strip()
+    except Exception as e:
+        current_app.logger.warning(f"[AI] personalize_interview_email failed: {e}")
+
+    # Fallback: minimal placeholder substitution
+    return (template_body
+            .replace('{lawyer_name}', lawyer_name)
+            .replace('{your_name}', 'Anshi Mudgal'))
+
+
+def generate_interview_questionnaire(lawyer_name: str, role: str, firm: str,
+                                     practice_area: str, court: str) -> str:
+    """
+    Generate 8-10 tailored interview questions using the Cinderella Arc Method.
+    Used at Step 5 to prepare the questionnaire embedded in the email body.
+    Returns the questions as plain numbered text.
+    """
+    prompt = f"""You are preparing a written interview questionnaire for a SuperLawyer feature article.
+
+Lawyer: {lawyer_name}
+Role: {role or 'Advocate'}
+Firm: {firm or 'Independent'}
+Practice Area: {practice_area or 'General'}
+Court/Jurisdiction: {court or 'India'}
+
+Use the Cinderella Arc Method to structure 8-10 questions covering:
+1. Humble beginnings — early inspiration and entry into law
+2. Mentorship and early rise — formative experiences and influential mentors
+3. Turning point — the defining moment in their career trajectory
+4. Key challenges — obstacles overcome and growth achieved
+5. Future outlook — vision, goals, and advice for the next generation
+
+Guidelines:
+- Each question must be crisp, precise, and preferably one line
+- Tailor questions to their specific practice area and court/jurisdiction
+- Maximum 10 questions
+- Number each question (1. 2. 3. ...)
+- No preamble, no explanations — just the numbered questions
+
+Return ONLY the numbered list of questions:"""
+
+    try:
+        raw = _generate(prompt)
+        if raw and raw.strip():
+            return raw.strip()
+    except Exception as e:
+        current_app.logger.warning(f"[AI] generate_interview_questionnaire failed: {e}")
+
+    # Fallback generic questionnaire
+    return (
+        "1. What first drew you to the legal profession, and what was your early journey like?\n"
+        "2. Who were the mentors who most influenced your growth as a lawyer?\n"
+        "3. What was the turning point that shaped the direction of your career?\n"
+        "4. Can you describe a particularly challenging case and what you learned from it?\n"
+        "5. How has the legal landscape in India evolved during your years of practice?\n"
+        "6. What does a typical day look like for you, and how do you balance professional demands?\n"
+        "7. What is the most important quality a lawyer must develop to succeed today?\n"
+        "8. What advice would you give to young lawyers just starting their careers?\n"
+        "9. What are your goals and aspirations for the next phase of your journey?\n"
+        "10. What moment in your career are you most proud of, and why?"
+    )
+
+
 def search_cases(query: str, cases_data: list) -> list:
     """Rank stored cases by relevance to a search query using AI."""
     if not cases_data:
