@@ -17,8 +17,10 @@ def outreach_list():
     if status_filter != 'all':
         q = q.filter_by(status=status_filter)
     emails = q.order_by(OutreachEmail.created_at.desc()).all()
+    # DB returns naive datetimes (DateTime column without timezone=True),
+    # so compare with naive UTC to avoid TypeError in template
     return render_template('outreach.html', emails=emails, status=status_filter,
-                           now=datetime.now(timezone.utc))
+                           now=datetime.utcnow())
 
 
 @outreach_bp.route('/outreach/generate/<int:lawyer_id>', methods=['POST'])
@@ -128,6 +130,10 @@ def send(email_id):
             ).first()
             if primary:
                 primary.status = 'followed_up'
+
+        else:
+            # Interview campaign emails (int_invite, int_cv_ack, etc.) — mark as sent
+            outreach.status = 'sent'
 
         db.session.commit()
         flash(f'Email sent to {lawyer.email}.', 'success')
