@@ -229,6 +229,39 @@ def generate_interview_step(lawyer_id, step):
     return redirect(url_for('outreach.edit_email', email_id=outreach.id))
 
 
+@outreach_bp.route('/outreach/<int:email_id>/ai-assist', methods=['POST'])
+@login_required
+def ai_assist(email_id):
+    """AJAX: rewrite the email draft based on a plain-text instruction."""
+    from app.ai.gemma import ai_rewrite_email
+    email = db.get_or_404(OutreachEmail, email_id)
+    if email.user_id != current_user.id:
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    data = request.get_json(silent=True) or {}
+    instruction = (data.get('instruction') or '').strip()
+    subject = (data.get('subject') or email.subject).strip()
+    body = (data.get('body') or email.body).strip()
+
+    if not instruction:
+        return jsonify({'error': 'No instruction provided'}), 400
+
+    lawyer_name = email.lawyer.name if email.lawyer else ''
+    case_title = email.case.title if email.case else ''
+
+    result = ai_rewrite_email(
+        subject=subject,
+        body=body,
+        instruction=instruction,
+        lawyer_name=lawyer_name,
+        case_title=case_title,
+    )
+    if not result:
+        return jsonify({'error': 'AI unavailable — please try again'}), 503
+
+    return jsonify(result)
+
+
 @outreach_bp.route('/outreach/<int:email_id>/delete', methods=['POST'])
 @login_required
 def delete_email(email_id):

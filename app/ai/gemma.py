@@ -459,6 +459,54 @@ Return ONLY this JSON (no markdown):
     return result
 
 
+def ai_rewrite_email(subject: str, body: str, instruction: str,
+                     lawyer_name: str = '', case_title: str = '') -> dict | None:
+    """
+    Rewrite / improve an email draft based on a user instruction.
+    Returns {subject, body} dict or None on failure.
+    Higher temperature (0.4) for creative rewrites.
+    """
+    context_parts = []
+    if lawyer_name:
+        context_parts.append(f"Recipient: {lawyer_name}")
+    if case_title:
+        context_parts.append(f"Related case: {case_title}")
+    context = "\n".join(context_parts)
+
+    prompt = f"""You are helping draft a professional legal outreach email. Apply the following instruction to improve the email.
+
+Instruction: {instruction}
+
+{context}
+
+Current subject: {subject}
+Current body:
+{body}
+
+Rules:
+- Keep the email professional and appropriate for an Indian legal professional
+- Preserve the core message and intent unless the instruction says otherwise
+- Do NOT add fictional details about cases or people you don't know
+- Return ONLY this JSON (no markdown, no explanation):
+{{"subject": "updated subject line", "body": "updated email body using \\n for newlines"}}"""
+
+    try:
+        client, model = _get_client()
+        if not client:
+            return None
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.4, max_output_tokens=2048),
+        )
+        result = _parse_json(response.text)
+        if isinstance(result, dict) and 'subject' in result and 'body' in result:
+            return result
+    except Exception as e:
+        current_app.logger.error(f"[AI] ai_rewrite_email error: {e}")
+    return None
+
+
 def add_interview_personalization(body: str, lawyer_name: str, firm: str, role: str) -> str | None:
     """
     Ask AI to insert exactly ONE personalization sentence into the Step 1 interview invite,

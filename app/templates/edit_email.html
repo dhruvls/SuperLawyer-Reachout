@@ -71,6 +71,35 @@
                         <label for="body" class="form-label fw-bold">Body</label>
                         <textarea class="form-control" id="body" name="body" rows="14">{{ email.body }}</textarea>
                     </div>
+                    <!-- ── AI Assist Panel ── -->
+                    <div class="card bg-light border-0 mb-3" id="ai-assist-panel">
+                        <div class="card-body py-2 px-3">
+                            <div class="d-flex align-items-center gap-2 mb-2">
+                                <span class="fw-semibold text-purple" style="color:#7c3aed;">
+                                    <i class="bi bi-stars"></i> AI Assist
+                                </span>
+                                <small class="text-muted">Tell the AI what to change — it updates the draft instantly.</small>
+                            </div>
+                            <!-- Quick-action chips -->
+                            <div class="d-flex flex-wrap gap-1 mb-2" id="ai-chips">
+                                <button type="button" class="btn btn-sm btn-outline-secondary ai-chip py-0 px-2" style="font-size:.8rem;">Make it shorter</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary ai-chip py-0 px-2" style="font-size:.8rem;">Make it more formal</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary ai-chip py-0 px-2" style="font-size:.8rem;">Make it more friendly</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary ai-chip py-0 px-2" style="font-size:.8rem;">Stronger opening line</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary ai-chip py-0 px-2" style="font-size:.8rem;">Add urgency</button>
+                                <button type="button" class="btn btn-sm btn-outline-secondary ai-chip py-0 px-2" style="font-size:.8rem;">Simplify language</button>
+                            </div>
+                            <div class="input-group input-group-sm">
+                                <input type="text" class="form-control" id="ai-instruction"
+                                       placeholder="e.g. Make it shorter and more direct, or add a line about their recent case…">
+                                <button class="btn btn-primary" type="button" id="ai-rewrite-btn">
+                                    <i class="bi bi-stars"></i> Rewrite
+                                </button>
+                            </div>
+                            <div id="ai-error" class="text-danger small mt-1 d-none"></div>
+                        </div>
+                    </div>
+
                     <div class="d-flex align-items-center gap-2 flex-wrap">
                         {% if email.status != 'draft' %}
                         <small class="text-muted fst-italic">
@@ -292,4 +321,93 @@
         </div>
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const btn = document.getElementById('ai-rewrite-btn');
+    const input = document.getElementById('ai-instruction');
+    const errDiv = document.getElementById('ai-error');
+    const subjectEl = document.getElementById('subject');
+    const bodyEl = document.getElementById('body');
+    const emailId = {{ email.id }};
+
+    // Quick-action chips fill the instruction field
+    document.querySelectorAll('.ai-chip').forEach(chip => {
+        chip.addEventListener('click', () => {
+            input.value = chip.textContent.trim();
+            input.focus();
+        });
+    });
+
+    // Allow Enter key in instruction box
+    input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); btn.click(); }
+    });
+
+    btn.addEventListener('click', async () => {
+        const instruction = input.value.trim();
+        if (!instruction) { input.focus(); return; }
+
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> Rewriting…';
+        errDiv.classList.add('d-none');
+
+        try {
+            const resp = await fetch(`/outreach/${emailId}/ai-assist`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    instruction,
+                    subject: subjectEl.value,
+                    body: bodyEl.value,
+                }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) {
+                errDiv.textContent = data.error || 'AI error — try again.';
+                errDiv.classList.remove('d-none');
+            } else {
+                const prevSubject = subjectEl.value;
+                const prevBody = bodyEl.value;
+                subjectEl.value = data.subject;
+                bodyEl.value = data.body;
+                input.value = '';
+
+                // Flash green border on textarea to show it changed
+                bodyEl.style.borderColor = '#198754';
+                setTimeout(() => { bodyEl.style.borderColor = ''; }, 1200);
+
+                showUndo(prevSubject, prevBody);
+            }
+        } catch (e) {
+            errDiv.textContent = 'Network error — please try again.';
+            errDiv.classList.remove('d-none');
+        } finally {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-stars"></i> Rewrite';
+        }
+    });
+
+    function showUndo(prevSubject, prevBody) {
+        let strip = document.getElementById('ai-undo-strip');
+        if (!strip) {
+            strip = document.createElement('div');
+            strip.id = 'ai-undo-strip';
+            strip.className = 'alert alert-success d-flex align-items-center gap-2 py-1 px-2 mt-1 mb-0';
+            strip.style.fontSize = '.85rem';
+            document.getElementById('ai-assist-panel').after(strip);
+        }
+        strip.innerHTML = `<i class="bi bi-check-circle-fill"></i> AI updated the draft.
+            <button type="button" class="btn btn-sm btn-link p-0 ms-auto text-success fw-bold" id="ai-undo-btn">Undo</button>`;
+        document.getElementById('ai-undo-btn').addEventListener('click', () => {
+            subjectEl.value = prevSubject;
+            bodyEl.value = prevBody;
+            strip.remove();
+        });
+        setTimeout(() => { if (strip.parentNode) strip.remove(); }, 8000);
+    }
+})();
+</script>
 {% endblock %}
