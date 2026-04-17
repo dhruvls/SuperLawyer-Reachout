@@ -21,6 +21,7 @@ class User(UserMixin, db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(256), nullable=False)
     name = db.Column(db.String(100), nullable=False)
+    organisation = db.Column(db.String(200))  # e.g. "SuperLawyer / LawSikho"
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     emails_sent = db.relationship('OutreachEmail', backref='sender', lazy=True)
     bookmarked_cases = db.relationship('LegalCase', secondary=case_bookmarks, backref='bookmarked_by', lazy='dynamic')

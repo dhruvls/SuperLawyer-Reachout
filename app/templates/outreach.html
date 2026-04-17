@@ -1,6 +1,17 @@
 {% extends "base.html" %}
 {% block title %}Outreach - Super Lawyer Reachout{% endblock %}
 {% block content %}
+{% set TYPE_LABELS = {
+    'primary':       'Primary',
+    'followup':      'Follow-up',
+    'int_invite':    'Step 1 — Interview Invite',
+    'int_cv_ack':    'Step 2 — CV/Bio Received',
+    'int_cv_remind': 'Step 3 — CV/Bio Reminder',
+    'int_quest':     'Step 5 — Questionnaire',
+    'int_dl_remind': 'Step 6 — Deadline Reminder',
+    'int_resp_ack':  'Step 7 — Response Received',
+    'int_published': 'Step 9 — Published',
+} %}
 <div class="d-flex justify-content-between align-items-center mb-4">
     <h2>Outreach Pipeline</h2>
 </div>
@@ -67,6 +78,9 @@
         <a href="?status=pending_followup" class="btn btn-{{ 'primary' if status == 'pending_followup' else 'outline-primary' }} btn-sm">Pending Follow-up</a>
         <a href="?status=followed_up" class="btn btn-{{ 'primary' if status == 'followed_up' else 'outline-primary' }} btn-sm">Followed Up</a>
         <a href="?status=failed" class="btn btn-{{ 'primary' if status == 'failed' else 'outline-primary' }} btn-sm">Failed</a>
+        <a href="?type=interview" class="btn btn-{{ 'info' if request.args.get('type') == 'interview' else 'outline-secondary' }} btn-sm text-dark">
+            <i class="bi bi-camera-video"></i> Interview Campaign
+        </a>
     </div>
 </div>
 
@@ -108,11 +122,14 @@
                     </td>
                     <td><small>{{ email.subject[:50] }}{% if email.subject|length > 50 %}...{% endif %}</small></td>
                     <td>
+                        {% set is_int = email.email_type and email.email_type.startswith('int_') %}
+                        {% set type_label = TYPE_LABELS.get(email.email_type, email.email_type) %}
                         {% if email.status == 'draft' %}
                         <span class="badge bg-secondary"><i class="bi bi-file-earmark"></i> Draft</span>
-                        <small class="d-block text-muted">{{ email.email_type }}</small>
+                        <small class="d-block text-muted">{{ type_label }}</small>
                         {% elif email.status == 'sent' %}
                         <span class="badge bg-success"><i class="bi bi-check2"></i> Sent</span>
+                        {% if is_int %}<small class="d-block text-muted">{{ type_label }}</small>{% endif %}
                         {% elif email.status == 'pending_followup' %}
                         {% if email.followup_date and email.followup_date < now %}
                         <span class="badge bg-danger"><i class="bi bi-exclamation-circle"></i> Overdue</span>

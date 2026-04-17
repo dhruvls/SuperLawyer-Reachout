@@ -405,33 +405,41 @@ If no qualifying names found, return: []"""
 def generate_outreach_email(lawyer_name: str, lawyer_firm: str, lawyer_role: str,
                             case_title: str, case_summary: str,
                             court: str = '', practice_area: str = '',
-                            email_type: str = 'primary') -> dict | None:
+                            email_type: str = 'primary',
+                            sender_name: str = '', sender_org: str = '') -> dict | None:
     """
     Generate a personalized outreach email to a lawyer.
     Returns {subject, body} dict or None if AI unavailable.
     """
+    sender_line = f"Sender: {sender_name}" if sender_name else ""
+    org_line = f"Sender Organisation: {sender_org}" if sender_org else ""
     context = f"""Lawyer: {lawyer_name}
 Firm: {lawyer_firm or 'Unknown Firm'}
 Role: {lawyer_role}
 Case: {case_title}
 Court: {court or 'not specified'}
 Practice Area: {practice_area or 'not specified'}
-Case Summary: {case_summary}"""
+Case Summary: {case_summary}
+{sender_line}
+{org_line}""".strip()
 
     if email_type == 'followup':
         prompt = f"""Write a brief, professional follow-up email to a lawyer in India. This is a follow-up to an outreach email sent 3-5 days ago. Keep it to 3-4 sentences: acknowledge no response, briefly restate the value, politely ask if they have time for a call.
 
 {context}
 
+Sign the email with the sender name provided (or leave as "Best regards" if no sender name given).
 Return ONLY this JSON (no markdown):
 {{"subject": "Re: [original subject]", "body": "email body using \\n for newlines"}}"""
     else:
+        org_ref = sender_org or 'our client'
         prompt = f"""Write a concise, personalized outreach email to a senior Indian lawyer. The email should:
 - Open with a specific reference to their role in this case (show you know the details)
-- In one sentence explain why you're reaching out (you represent [fintech/startup/corporate client] with needs in this practice area)
+- In one sentence explain why you're reaching out (you represent {org_ref} with needs in this practice area)
 - Ask for a 15-minute introductory call
 - Stay under 120 words in the body
 - Be formal but direct — Indian legal professionals value clarity
+- Sign off with the sender name provided
 
 {context}
 
@@ -451,45 +459,24 @@ Return ONLY this JSON (no markdown):
     return result
 
 
-def personalize_interview_email(step_name: str, template_body: str, lawyer_name: str,
-                                firm: str, role: str) -> str:
+def add_interview_personalization(body: str, lawyer_name: str, firm: str, role: str) -> str | None:
     """
-    Lightly personalize a Super Lawyer interview template for a specific lawyer.
-    Replaces {lawyer_name} / {your_name} placeholders and adds ONE specific sentence
-    referencing their actual work. Keeps the rest verbatim — institutional template.
-    Returns the personalized body text (plain text, not JSON).
+    Ask AI to insert exactly ONE personalization sentence into the Step 1 interview invite,
+    after the "Warm greetings from SuperLawyer!" line. All other text stays verbatim.
+    Returns modified body or None on failure (caller keeps original).
     """
-    prompt = f"""You are personalizing a written interview invitation email for a specific lawyer.
+    firm_str = f' at {firm}' if firm else ''
+    prompt = f"""The following is an email body. After the line "Warm greetings from SuperLawyer!" insert exactly ONE sentence that specifically references {lawyer_name}'s work as {role or 'Advocate'}{firm_str}. Keep every other word completely identical. Return only the full modified email body, no explanation, no markdown.
 
-Lawyer: {lawyer_name}
-Firm: {firm or 'Independent'}
-Role: {role or 'Advocate'}
-Interview Step: {step_name}
-
-Original template:
-{template_body}
-
-Instructions:
-1. Replace {{lawyer_name}} with "{lawyer_name}" (address as "Sir" if name/gender unclear)
-2. Replace {{your_name}} with "Anshi Mudgal"
-3. Add ONE specific sentence (1 line) referencing their actual legal work, practice area, or notable cases — insert it naturally into the opening paragraph
-4. Keep everything else EXACTLY as written — same structure, same sign-off, same links
-5. Do NOT rewrite, summarize, or restructure the template
-6. Return ONLY the email body text — no subject line, no JSON, no markdown fences
-
-Personalized email body:"""
-
+{body}"""
     try:
-        raw = _generate(prompt)
-        if raw and len(raw.strip()) > 50:
-            return raw.strip()
+        result = _generate(prompt)
+        # Sanity check: result must be close in length to original (not truncated/rewritten)
+        if result and len(result.strip()) > len(body) * 0.75:
+            return result.strip()
     except Exception as e:
-        current_app.logger.warning(f"[AI] personalize_interview_email failed: {e}")
-
-    # Fallback: minimal placeholder substitution
-    return (template_body
-            .replace('{lawyer_name}', lawyer_name)
-            .replace('{your_name}', 'Anshi Mudgal'))
+        current_app.logger.warning(f"[AI] add_interview_personalization failed: {e}")
+    return None
 
 
 def generate_interview_questionnaire(lawyer_name: str, role: str, firm: str,

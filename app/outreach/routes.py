@@ -13,9 +13,12 @@ outreach_bp = Blueprint('outreach', __name__)
 @login_required
 def outreach_list():
     status_filter = request.args.get('status', 'all')
+    type_filter = request.args.get('type', '')
     q = OutreachEmail.query.filter_by(user_id=current_user.id)
     if status_filter != 'all':
         q = q.filter_by(status=status_filter)
+    if type_filter == 'interview':
+        q = q.filter(OutreachEmail.email_type.like('int_%'))
     emails = q.order_by(OutreachEmail.created_at.desc()).all()
     # DB returns naive datetimes (DateTime column without timezone=True),
     # so compare with naive UTC to avoid TypeError in template
@@ -43,7 +46,11 @@ def generate(lawyer_id):
     else:
         email_type = requested_type
 
-    result = generate_email(lawyer, case, email_type)
+    result = generate_email(
+        lawyer, case, email_type,
+        sender_name=current_user.name,
+        sender_org=current_user.organisation or '',
+    )
 
     outreach = OutreachEmail(
         lawyer_id=lawyer.id,
@@ -167,7 +174,7 @@ def retry_email(email_id):
 def generate_interview_step(lawyer_id, step):
     """Generate a draft email for a specific Super Lawyer interview campaign step."""
     from app.outreach.interview_templates import INTERVIEW_STEPS
-    from app.ai.gemma import personalize_interview_email, generate_interview_questionnaire
+    from app.ai.gemma import add_interview_personalization, generate_interview_questionnaire
 
     lawyer = db.get_or_404(Lawyer, lawyer_id)
     case = lawyer.case
@@ -177,9 +184,14 @@ def generate_interview_step(lawyer_id, step):
         return redirect(url_for('cases.case_detail', case_id=case.id))
 
     step_data = INTERVIEW_STEPS[step]
-    template_body = step_data['body']
 
-    # Step 5: generate AI questionnaire and embed it in the template
+    # Direct substitution — preserves exact institutional template text
+    body = (step_data['body']
+            .replace('{lawyer_name}', lawyer.name)
+            .replace('{your_name}', current_user.name)
+            .replace('{interview_link}', '[Insert interview link here]'))
+
+    # Step 5 only: embed AI-generated questionnaire
     if step == 5:
         questionnaire = generate_interview_questionnaire(
             lawyer_name=lawyer.name,
@@ -188,16 +200,18 @@ def generate_interview_step(lawyer_id, step):
             practice_area=case.practice_area or '',
             court=case.court or '',
         )
-        template_body = template_body.replace('{questionnaire}', questionnaire)
+        body = body.replace('{questionnaire}', questionnaire)
 
-    # Personalize the template with lawyer-specific details
-    body = personalize_interview_email(
-        step_name=step_data['name'],
-        template_body=template_body,
-        lawyer_name=lawyer.name,
-        firm=lawyer.firm or '',
-        role=lawyer.role or '',
-    )
+    # Step 1 only: ask AI to insert ONE personalization sentence (keep template verbatim if AI fails)
+    if step == 1:
+        personalised = add_interview_personalization(
+            body=body,
+            lawyer_name=lawyer.name,
+            firm=lawyer.firm or '',
+            role=lawyer.role or '',
+        )
+        if personalised:
+            body = personalised
 
     outreach = OutreachEmail(
         lawyer_id=lawyer.id,

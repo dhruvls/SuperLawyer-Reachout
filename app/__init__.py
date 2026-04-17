@@ -166,6 +166,13 @@ def _migrate_columns(app):
                     conn.commit()
                     app.logger.info(f'Added {col_name} column.')
 
+            # ── Add user.organisation ───────────────────────────────────────
+            user_cols = [c['name'] for c in sa_inspect(db.engine).get_columns('user')]
+            if 'organisation' not in user_cols:
+                conn.execute(text("ALTER TABLE \"user\" ADD COLUMN organisation VARCHAR(200)"))
+                conn.commit()
+                app.logger.info('Added user.organisation column.')
+
             # ── Make outreach_email FKs nullable ───────────────────────────
             # Required so scan can wipe lawyers/cases without FK violations.
             # outreach_email rows are preserved but lawyer_id/case_id become NULL.

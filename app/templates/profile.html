@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Profile - Super Lawyer Reachout{% endblock %}
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-lg-6">
+        <div class="card shadow-sm">
+            <div class="card-header bg-white">
+                <h5 class="mb-0"><i class="bi bi-person-gear"></i> Your Profile</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST">
+                    <div class="mb-3">
+                        <label for="name" class="form-label fw-bold">Your Name</label>
+                        <input type="text" class="form-control" id="name" name="name"
+                               value="{{ user.name }}" required
+                               placeholder="e.g. Anshi Mudgal">
+                        <div class="form-text">Used as the sender name in all outreach and interview emails.</div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="organisation" class="form-label fw-bold">Organisation / Team</label>
+                        <input type="text" class="form-control" id="organisation" name="organisation"
+                               value="{{ user.organisation or '' }}"
+                               placeholder="e.g. SuperLawyer / LawSikho">
+                        <div class="form-text">Used to replace [Client Name] placeholders in AI-generated emails.</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Email</label>
+                        <input type="text" class="form-control" value="{{ user.email }}" readonly disabled>
+                        <div class="form-text text-muted">Email cannot be changed here.</div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-save"></i> Save Profile
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="card shadow-sm mt-4">
+            <div class="card-header bg-white">
+                <h6 class="mb-0"><i class="bi bi-info-circle"></i> How Your Profile Is Used</h6>
+            </div>
+            <div class="card-body">
+                <ul class="mb-0 small text-muted">
+                    <li>All outreach emails are signed with <strong>{{ user.name }}</strong></li>
+                    <li>Interview campaign emails use <strong>{{ user.name }}</strong> as the sender throughout</li>
+                    <li>AI-generated emails replace <code>[Your Name]</code> with your name automatically</li>
+                    <li>AI-generated emails replace <code>[Client Name]</code> with your organisation{% if user.organisation %} (<strong>{{ user.organisation }}</strong>){% endif %}</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

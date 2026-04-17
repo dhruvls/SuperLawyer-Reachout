@@ -216,6 +216,21 @@ def case_detail(case_id):
                            interview_steps=INTERVIEW_ALL_STEPS)
 
 
+@cases_bp.route('/profile', methods=['GET', 'POST'])
+@login_required
+def profile():
+    if request.method == 'POST':
+        name = request.form.get('name', '').strip()
+        org = request.form.get('organisation', '').strip()
+        if name:
+            current_user.name = name
+        current_user.organisation = org or None
+        db.session.commit()
+        flash('Profile updated.', 'success')
+        return redirect(url_for('cases.profile'))
+    return render_template('profile.html', user=current_user)
+
+
 @cases_bp.route('/cases/<int:case_id>/update-status', methods=['POST'])
 @login_required
 def update_case_status(case_id):
